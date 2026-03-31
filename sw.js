@@ -1,15 +1,8 @@
-const CACHE_NAME = 'cap-v1.0.0';
-const ASSETS = [
-  './',
-  './index.html',
-  './app.js',
-  './manifest.json'
-];
+const CACHE_NAME = 'cap-v2.0.0';
+const ASSETS = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
-  );
+  e.waitUntil(caches.open(CACHE_NAME).then(c => c.addAll(ASSETS)));
   self.skipWaiting();
 });
 
@@ -23,7 +16,41 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request))
+  e.respondWith(caches.match(e.request).then(cached => cached || fetch(e.request)));
+});
+
+// ─── Push notification reçue ─────────────────────────────────────────────────
+self.addEventListener('push', e => {
+  let data = { title: 'Cap! 🎯', body: 'Fais le point sur tes objectifs 🎯' };
+  try { if (e.data) data = { ...data, ...e.data.json() }; } catch (_) {}
+
+  e.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: './icons/icon-192.png',
+      badge: './icons/icon-192.png',
+      tag: data.tag || 'cap-daily',
+      renotify: true,
+      vibrate: [200, 100, 200],
+      data: { url: data.data?.url || './' }
+    })
+  );
+});
+
+// ─── Clic sur la notification → ouvrir l'app ─────────────────────────────────
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const target = e.notification.data?.url || './';
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      // Si une fenêtre de l'app est déjà ouverte, on la focus
+      for (const client of list) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      // Sinon on en ouvre une nouvelle
+      if (clients.openWindow) return clients.openWindow(target);
+    })
   );
 });
