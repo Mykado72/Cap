@@ -1,6 +1,6 @@
 // ─── Cap! — app.js ────────────────────────────────────────────────────────────
 // ⚠️  Remplacer BACKEND_URL par votre URL Railway une fois déployé
-const BACKEND_URL = 'cap-backend-production-3b1c.up.railway.app'; // ← à changer
+const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app'; // ← à changer
 
 const STORAGE_KEY = 'cap_data';
 const NOTIF_KEY   = 'cap_notif';
