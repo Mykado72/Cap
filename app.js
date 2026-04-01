@@ -1,6 +1,5 @@
 // ─── Cap! — app.js ────────────────────────────────────────────────────────────
-// ⚠️  Remplacer BACKEND_URL par votre URL Railway une fois déployé
-const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app'; // ← à changer
+const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app';
 
 const STORAGE_KEY = 'cap_data';
 const NOTIF_KEY   = 'cap_notif';
@@ -14,7 +13,7 @@ let reviewIndex  = 0;
 // ─── Persistence ─────────────────────────────────────────────────────────────
 function load() {
   try { const r = localStorage.getItem(STORAGE_KEY); if (r) return JSON.parse(r); } catch (_) {}
-  return { lastVisit: null, objectives: [] };
+  return { lastVisit: null, objectives: [], onboardingDone: false };
 }
 function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
@@ -46,6 +45,124 @@ function progressColor(p) { return p >= 80 ? 'var(--green)' : p >= 40 ? 'var(--y
 function periodName(p) { return p === 'year' ? 'Annuel' : p === 'month' ? 'Mensuel' : 'Hebdomadaire'; }
 function periodIcon(p)  { return p === 'year' ? '🎯' : p === 'month' ? '📅' : '📌'; }
 function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) +
+    ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+
+// ─── Onboarding — suggestions d'objectifs ────────────────────────────────────
+const SUGGESTIONS = [
+  {
+    emoji: '🚭', title: "J'arrête de fumer", period: 'year', mode: 'list',
+    tasks: ["Ne pas acheter de cigarettes aujourd'hui", "Appeler un proche si envie forte", "Télécharger une app d'aide au sevrage", "Consulter un médecin ou tabacologue"]
+  },
+  {
+    emoji: '🚬', title: "Je réduis ma consommation de tabac", period: 'month', mode: 'list',
+    tasks: ["Passer de 20 à 15 cigarettes/jour cette semaine", "Eviter de fumer après les repas", "Repousser la première cigarette d'1h chaque matin", "Tenir un journal de ma consommation"]
+  },
+  {
+    emoji: '🍎', title: "J'arrête de grignoter", period: 'month', mode: 'list',
+    tasks: ["Préparer des encas sains à la maison", "Ne pas acheter de biscuits ou chips", "Boire un grand verre d'eau avant de craquer", "Identifier mes déclencheurs (stress, ennui…)"]
+  },
+  {
+    emoji: '❤️', title: "Prendre soin de ma santé", period: 'year', mode: 'list',
+    tasks: ["Prendre rendez-vous chez le médecin généraliste", "Faire une prise de sang annuelle", "Consulter le dentiste", "Faire contrôler ma vue", "Consulter le dermatologue"]
+  },
+  {
+    emoji: '🏃', title: "Bouger davantage", period: 'month', mode: 'list',
+    tasks: ["Marcher 30 min par jour", "Prendre les escaliers plutôt que l'ascenseur", "M'inscrire à une activité sportive", "Faire du vélo ou de la course le week-end"]
+  },
+  {
+    emoji: '😴', title: "Mieux dormir", period: 'month', mode: 'list',
+    tasks: ["Me coucher avant minuit", "Arrêter les écrans 30 min avant de dormir", "Garder une heure de réveil fixe", "Créer une routine du soir apaisante"]
+  },
+  {
+    emoji: '💰', title: "Mieux gérer mon budget", period: 'month', mode: 'list',
+    tasks: ["Noter toutes mes dépenses cette semaine", "Préparer mes repas plutôt que commander", "Annuler les abonnements inutilisés", "Mettre de côté 10% de mes revenus"]
+  },
+  {
+    emoji: '📵', title: "Réduire le temps d'écran", period: 'month', mode: 'list',
+    tasks: ["Limiter les réseaux sociaux à 30 min/jour", "Pas de téléphone pendant les repas", "Mode avion une heure avant de dormir", "Lire un livre à la place du scroll"]
+  },
+  {
+    emoji: '🧘', title: "Prendre du temps pour moi", period: 'month', mode: 'percent',
+    tasks: []
+  },
+  {
+    emoji: '📚', title: "Lire davantage", period: 'month', mode: 'list',
+    tasks: ["Lire 20 pages par jour", "Toujours avoir un livre en cours", "Rejoindre un club de lecture", "Finir un livre ce mois-ci"]
+  },
+];
+
+function showOnboarding() {
+  const selected = new Set();
+
+  const screen = document.createElement('div');
+  screen.className = 'onboard-screen';
+  document.body.appendChild(screen);
+  requestAnimationFrame(() => screen.classList.add('visible'));
+
+  function refresh() {
+    screen.innerHTML = `
+      <div class="onboard-wrap">
+        <div class="onboard-hero">
+          <div class="onboard-logo">Cap<span class="logo-bang">!</span></div>
+          <h1 class="onboard-title">Bienvenue 👋</h1>
+          <p class="onboard-sub">Cap! est ton journal de bord personnel.<br>Choisis des objectifs pour commencer, ou crée les tiens.</p>
+        </div>
+        <p class="onboard-hint">Sélectionne ceux qui te parlent :</p>
+        <div class="suggest-grid">
+          ${SUGGESTIONS.map((s, i) => `
+            <button class="suggest-card ${selected.has(i) ? 'selected' : ''}" data-i="${i}">
+              <span class="suggest-emoji">${s.emoji}</span>
+              <span class="suggest-label">${s.title}</span>
+              ${selected.has(i) ? '<span class="suggest-check">✓</span>' : ''}
+            </button>`).join('')}
+        </div>
+        <div class="onboard-actions">
+          <button class="btn-secondary" id="btn-onboard-skip">Commencer sans objectif</button>
+          <button class="btn-primary ${selected.size === 0 ? 'disabled-soft' : ''}" id="btn-onboard-add">
+            ${selected.size > 0 ? `Ajouter (${selected.size}) →` : 'Ajouter →'}
+          </button>
+        </div>
+      </div>`;
+    bindOnboard();
+  }
+
+  function bindOnboard() {
+    screen.querySelectorAll('.suggest-card').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = +btn.dataset.i;
+        if (selected.has(i)) selected.delete(i); else selected.add(i);
+        refresh();
+      });
+    });
+    screen.querySelector('#btn-onboard-skip').addEventListener('click', finish);
+    screen.querySelector('#btn-onboard-add').addEventListener('click', () => {
+      if (selected.size === 0) { showToast('Sélectionne au moins un objectif'); return; }
+      selected.forEach(i => {
+        const s = SUGGESTIONS[i];
+        state.objectives.push({
+          id: uid(), title: s.title, period: s.period, periodLabel: periodLabel(s.period),
+          mode: s.mode, progress: 0,
+          tasks: s.mode === 'list' ? s.tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          archived: false, journal: []
+        });
+      });
+      save(); finish();
+    });
+  }
+
+  function finish() {
+    state.onboardingDone = true; save();
+    screen.classList.remove('visible');
+    screen.addEventListener('transitionend', () => { screen.remove(); render(); }, { once: true });
+  }
+
+  refresh();
+}
 
 // ─── Review ───────────────────────────────────────────────────────────────────
 function checkReview() {
@@ -97,6 +214,7 @@ function render() {
 
 function renderCard(obj) {
   const pct = objectiveProgress(obj), color = progressColor(pct);
+  const journalCount = (obj.journal || []).filter(e => e.note).length;
   return `
     <article class="obj-card">
       <div class="obj-card-top">
@@ -105,6 +223,7 @@ function renderCard(obj) {
           <h3 class="obj-title">${esc(obj.title)}</h3>
         </div>
         <div class="obj-actions">
+          ${journalCount > 0 ? `<button class="btn-icon-sm journal-btn" data-action="journal" data-id="${obj.id}" title="${journalCount} note(s)">📓</button>` : ''}
           <button class="btn-icon-sm" data-action="update"  data-id="${obj.id}">✎</button>
           <button class="btn-icon-sm" data-action="archive" data-id="${obj.id}">✓</button>
           <button class="btn-icon-sm danger" data-action="delete" data-id="${obj.id}">✕</button>
@@ -115,7 +234,22 @@ function renderCard(obj) {
         <span class="progress-label" style="color:${color}">${pct}%</span>
       </div>
       ${obj.mode === 'list' ? renderTaskList(obj, false) : ''}
+      ${journalCount > 0 ? renderLastJournalEntry(obj) : ''}
     </article>`;
+}
+
+function renderLastJournalEntry(obj) {
+  const entries = (obj.journal || []).filter(e => e.note);
+  if (!entries.length) return '';
+  const last = entries[entries.length - 1];
+  return `
+    <div class="journal-preview" data-action="journal" data-id="${obj.id}">
+      <span class="journal-preview-icon">📓</span>
+      <div class="journal-preview-body">
+        <span class="journal-preview-date">${formatDate(last.date)}</span>
+        <p class="journal-preview-text">${esc(last.note)}</p>
+      </div>
+    </div>`;
 }
 
 function renderTaskList(obj, interactive) {
@@ -141,6 +275,7 @@ function bindEvents() {
     if (action === 'delete')  confirmDelete(id);
     if (action === 'archive') { archiveObj(id); }
     if (action === 'update')  showUpdateModal(id);
+    if (action === 'journal') showJournalModal(id);
   }));
   document.getElementById('btn-archive').addEventListener('click', showArchiveModal);
   document.getElementById('btn-settings').addEventListener('click', showSettingsModal);
@@ -210,7 +345,7 @@ function showAddModal(period) {
     if (mode === 'list' && !tasks.length) { shake(overlay.querySelector('#new-task-input')); return; }
     state.objectives.push({ id: uid(), title, period, periodLabel: periodLabel(period), mode, progress: 0,
       tasks: mode === 'list' ? tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archived: false });
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archived: false, journal: [] });
     save(); close(); render();
   });
 }
@@ -242,19 +377,23 @@ function showUpdateModal(id) {
   });
 }
 
-// ─── Review ───────────────────────────────────────────────────────────────────
+// ─── Review enrichi (avec journal) ───────────────────────────────────────────
 function showReviewModal() {
   if (reviewIndex >= reviewQueue.length) {
     state.lastVisit = new Date().toISOString(); save(); render();
     showToast('✓ Bilan terminé ! Continue comme ça 🎯'); return;
   }
   const obj = reviewQueue[reviewIndex], pct = objectiveProgress(obj);
+  // Pré-remplir avec le dernier commentaire du jour si déjà fait aujourd'hui
+  const todayEntry = (obj.journal || []).find(e => e.date?.slice(0,10) === today());
+  const lastNote = todayEntry?.note || '';
+
   const { close, overlay } = showModal(`
     <div class="review-header">
       <span class="review-counter">${reviewIndex + 1} / ${reviewQueue.length}</span>
       <span class="review-tag ${obj.period}">${periodIcon(obj.period)} ${periodName(obj.period)}</span>
     </div>
-    <h2 class="modal-title">Point objectif</h2>
+    <h2 class="modal-title">On fait le point ✍️</h2>
     <p class="modal-subtitle">${esc(obj.title)}</p>
     <div class="review-current">
       <span class="review-pct-badge" style="color:${progressColor(pct)}">${pct}%</span>
@@ -263,11 +402,19 @@ function showReviewModal() {
     ${obj.mode === 'percent' ? `
       <label class="field-label">Nouvelle progression : <span id="rd">${pct}%</span></label>
       <input type="range" id="review-slider" class="pct-slider" min="0" max="100" value="${pct}">
-    ` : `<label class="field-label">Tâches réalisées</label>${renderTaskList(obj, true)}`}
+    ` : `<label class="field-label">Tâches du moment</label>${renderTaskList(obj, true)}`}
+
+    <div class="journal-section">
+      <label class="field-label journal-label">📓 Mon ressenti du jour</label>
+      <textarea id="review-note" class="journal-textarea" placeholder="Comment ça se passe ? Qu'est-ce qui est difficile, qu'est-ce qui avance bien ?…" maxlength="1000">${esc(lastNote)}</textarea>
+      <div class="journal-chars"><span id="journal-count">${lastNote.length}</span>/1000</div>
+    </div>
+
     <div class="review-actions">
       <button class="btn-secondary" id="btn-skip">Passer</button>
       <button class="btn-primary" id="btn-next">Suivant →</button>
     </div>`);
+
   if (obj.mode === 'percent') {
     overlay.querySelector('#review-slider').addEventListener('input', e => { overlay.querySelector('#rd').textContent = e.target.value + '%'; });
   } else {
@@ -276,11 +423,60 @@ function showReviewModal() {
       cb.closest('.task-item')?.classList.toggle('done', cb.checked);
     }));
   }
+
+  const noteEl = overlay.querySelector('#review-note');
+  const countEl = overlay.querySelector('#journal-count');
+  noteEl.addEventListener('input', () => { countEl.textContent = noteEl.value.length; });
+
   overlay.querySelector('#btn-next').addEventListener('click', () => {
     if (obj.mode === 'percent') obj.progress = +overlay.querySelector('#review-slider').value;
-    obj.updatedAt = new Date().toISOString(); save(); close(); reviewIndex++; showReviewModal();
+    const note = noteEl.value.trim();
+    if (!obj.journal) obj.journal = [];
+    // Mise à jour de l'entrée du jour si elle existe déjà, sinon nouvelle entrée
+    const existing = obj.journal.find(e => e.date?.slice(0,10) === today());
+    if (existing) {
+      existing.note = note;
+      existing.pct = objectiveProgress(obj);
+      existing.date = new Date().toISOString();
+    } else {
+      obj.journal.push({ id: uid(), date: new Date().toISOString(), note, pct: objectiveProgress(obj) });
+    }
+    obj.updatedAt = new Date().toISOString();
+    save(); close(); reviewIndex++; showReviewModal();
   });
   overlay.querySelector('#btn-skip').addEventListener('click', () => { close(); reviewIndex++; showReviewModal(); });
+}
+
+// ─── Journal ──────────────────────────────────────────────────────────────────
+function showJournalModal(id) {
+  const obj = state.objectives.find(o => o.id === id); if (!obj) return;
+  const entries = (obj.journal || []).filter(e => e.note).slice().reverse();
+
+  showModal(`
+    <button class="modal-close">✕</button>
+    <div class="journal-modal-header">
+      <span class="journal-modal-icon">📓</span>
+      <div>
+        <h2 class="modal-title">Journal intime</h2>
+        <p class="modal-subtitle">${esc(obj.title)}</p>
+      </div>
+    </div>
+    ${!entries.length
+      ? `<div class="journal-empty">
+           <div class="journal-empty-icon">✍️</div>
+           <p>Aucune note pour l'instant.</p>
+           <p class="journal-empty-hint">Les notes apparaissent lors du bilan quotidien «&nbsp;On fait le point&nbsp;».</p>
+         </div>`
+      : `<div class="journal-entries">
+           ${entries.map(e => `
+             <div class="journal-entry">
+               <div class="journal-entry-meta">
+                 <span class="journal-entry-date">${formatDate(e.date)}</span>
+                 <span class="journal-entry-pct" style="color:${progressColor(e.pct || 0)}">${e.pct || 0}%</span>
+               </div>
+               <p class="journal-entry-text">${esc(e.note).replace(/\n/g, '<br>')}</p>
+             </div>`).join('')}
+         </div>`}`);
 }
 
 // ─── Archive ──────────────────────────────────────────────────────────────────
@@ -318,7 +514,7 @@ function confirmDelete(id) {
   const { close } = showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Supprimer ?</h2>
-    <p class="modal-subtitle">« ${esc(obj.title)} » sera supprimé définitivement.</p>
+    <p class="modal-subtitle">« ${esc(obj.title)} » sera supprimé définitivement, ainsi que tout son journal.</p>
     <div class="review-actions">
       <button class="btn-secondary" id="cc">Annuler</button>
       <button class="btn-danger" id="cd">Supprimer</button>
@@ -424,7 +620,6 @@ function urlB64ToUint8(b64) {
 
 async function enableNotifications(time, closeModal) {
   try {
-    // Vérifie si déjà bloqué avant même de demander
     if (Notification.permission === 'denied') {
       showToast('🚫 Notifications bloquées — autorise-les dans les réglages du navigateur');
       showNotifBlockedHelp();
@@ -451,7 +646,7 @@ async function enableNotifications(time, closeModal) {
     });
     notifState.enabled = true; notifState.notifyAt = time; notifState.endpoint = subJson.endpoint;
     saveNotif(); closeModal(); showToast(`🔔 Notifications activées à ${time} ✓`);
-  } catch (err) { console.error(err); showToast('Erreur lors de l\'activation'); }
+  } catch (err) { console.error(err); showToast("Erreur lors de l'activation"); }
 }
 
 async function disableNotifications() {
@@ -530,6 +725,18 @@ function shake(el) { el.classList.add('shake'); el.addEventListener('animationen
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function init() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+  // Migration : ajouter journal[] aux objectifs existants
+  if (state.objectives) {
+    state.objectives.forEach(o => { if (!o.journal) o.journal = []; });
+    save();
+  }
+
+  if (!state.onboardingDone) {
+    showOnboarding();
+    return;
+  }
+
   const wasToday = state.lastVisit?.slice(0, 10) === today();
   render();
   if (!wasToday && state.objectives.filter(o => !o.archived).length > 0) setTimeout(() => checkReview(), 600);
