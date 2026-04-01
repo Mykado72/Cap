@@ -214,7 +214,8 @@ function render() {
 
 function renderCard(obj) {
   const pct = objectiveProgress(obj), color = progressColor(pct);
-  const journalCount = (obj.journal || []).filter(e => e.note).length;
+  const journalEntries = (obj.journal || []).filter(e => e.note);
+  const journalCount = journalEntries.length;
   return `
     <article class="obj-card">
       <div class="obj-card-top">
@@ -223,7 +224,7 @@ function renderCard(obj) {
           <h3 class="obj-title">${esc(obj.title)}</h3>
         </div>
         <div class="obj-actions">
-          ${journalCount > 0 ? `<button class="btn-icon-sm journal-btn" data-action="journal" data-id="${obj.id}" title="${journalCount} note(s)">📓</button>` : ''}
+          <button class="btn-icon-sm journal-btn ${journalCount > 0 ? 'has-notes' : ''}" data-journal="${obj.id}" title="Journal${journalCount > 0 ? ` (${journalCount})` : ''}">📓</button>
           <button class="btn-icon-sm" data-action="update"  data-id="${obj.id}">✎</button>
           <button class="btn-icon-sm" data-action="archive" data-id="${obj.id}">✓</button>
           <button class="btn-icon-sm danger" data-action="delete" data-id="${obj.id}">✕</button>
@@ -243,7 +244,7 @@ function renderLastJournalEntry(obj) {
   if (!entries.length) return '';
   const last = entries[entries.length - 1];
   return `
-    <div class="journal-preview" data-action="journal" data-id="${obj.id}">
+    <div class="journal-preview" data-journal="${obj.id}">
       <span class="journal-preview-icon">📓</span>
       <div class="journal-preview-body">
         <span class="journal-preview-date">${formatDate(last.date)}</span>
@@ -269,14 +270,24 @@ function bindEvents() {
   fab.addEventListener('click', () => fabMenu.classList.toggle('open'));
   document.querySelectorAll('.fab-item, .btn-add, .link-btn').forEach(b =>
     b.addEventListener('click', () => { fabMenu.classList.remove('open'); showAddModal(b.dataset.period); }));
+
+  // Actions sur les cartes (update, archive, delete)
   document.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', e => {
     e.stopPropagation();
     const { action, id } = b.dataset;
     if (action === 'delete')  confirmDelete(id);
-    if (action === 'archive') { archiveObj(id); }
+    if (action === 'archive') archiveObj(id);
     if (action === 'update')  showUpdateModal(id);
-    if (action === 'journal') showJournalModal(id);
   }));
+
+  // Bouton journal (data-journal) — bouton ET aperçu de note
+  document.querySelectorAll('[data-journal]').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      showJournalModal(el.dataset.journal);
+    });
+  });
+
   // Tâches cochables directement sur les cartes
   document.querySelectorAll('.task-check[data-obj]').forEach(cb => {
     cb.addEventListener('change', e => {
@@ -286,7 +297,6 @@ function bindEvents() {
       if (task) {
         task.done = cb.checked;
         cb.closest('.task-item')?.classList.toggle('done', cb.checked);
-        // Mise à jour de la barre de progression sur la carte
         const card = cb.closest('.obj-card');
         const pct = objectiveProgress(obj);
         const color = progressColor(pct);
@@ -298,13 +308,7 @@ function bindEvents() {
       }
     });
   });
-  // Journal preview (div cliquable)
-  document.querySelectorAll('.journal-preview').forEach(el => {
-    el.addEventListener('click', e => {
-      e.stopPropagation();
-      showJournalModal(el.dataset.id);
-    });
-  });
+
   document.getElementById('btn-archive').addEventListener('click', showArchiveModal);
   document.getElementById('btn-settings').addEventListener('click', showSettingsModal);
 }
