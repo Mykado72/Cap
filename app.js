@@ -233,7 +233,7 @@ function renderCard(obj) {
         <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${pct}%;background:${color}"></div></div>
         <span class="progress-label" style="color:${color}">${pct}%</span>
       </div>
-      ${obj.mode === 'list' ? renderTaskList(obj, false) : ''}
+      ${obj.mode === 'list' ? renderTaskList(obj, true) : ''}
       ${journalCount > 0 ? renderLastJournalEntry(obj) : ''}
     </article>`;
 }
@@ -277,6 +277,34 @@ function bindEvents() {
     if (action === 'update')  showUpdateModal(id);
     if (action === 'journal') showJournalModal(id);
   }));
+  // Tâches cochables directement sur les cartes
+  document.querySelectorAll('.task-check[data-obj]').forEach(cb => {
+    cb.addEventListener('change', e => {
+      e.stopPropagation();
+      const obj = state.objectives.find(o => o.id === cb.dataset.obj);
+      const task = obj?.tasks?.find(t => t.id === cb.dataset.task);
+      if (task) {
+        task.done = cb.checked;
+        cb.closest('.task-item')?.classList.toggle('done', cb.checked);
+        // Mise à jour de la barre de progression sur la carte
+        const card = cb.closest('.obj-card');
+        const pct = objectiveProgress(obj);
+        const color = progressColor(pct);
+        const fill = card?.querySelector('.progress-bar-fill');
+        const label = card?.querySelector('.progress-label');
+        if (fill) { fill.style.width = pct + '%'; fill.style.background = color; }
+        if (label) { label.textContent = pct + '%'; label.style.color = color; }
+        save();
+      }
+    });
+  });
+  // Journal preview (div cliquable)
+  document.querySelectorAll('.journal-preview').forEach(el => {
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      showJournalModal(el.dataset.id);
+    });
+  });
   document.getElementById('btn-archive').addEventListener('click', showArchiveModal);
   document.getElementById('btn-settings').addEventListener('click', showSettingsModal);
 }
@@ -569,6 +597,12 @@ function showSettingsModal() {
     <div class="settings-actions">
       <button class="btn-secondary small" id="btn-test" ${!notifState.enabled ? 'disabled' : ''}>Tester</button>
       <button class="btn-primary" id="btn-save-settings">Enregistrer</button>
+    </div>
+
+    <div class="settings-clearzone">
+      <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">
+        🗑 Vider le cache de l'app
+      </a>
     </div>`);
 
   const toggle = overlay.querySelector('#notif-toggle');
