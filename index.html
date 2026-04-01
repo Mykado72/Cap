@@ -54,7 +54,7 @@
     .app-header {
       position: sticky; top: 0; z-index: 10;
       display: flex; align-items: center; justify-content: space-between;
-      padding: 16px 20px 14px;
+      padding: calc(16px + env(safe-area-inset-top, 0px)) 20px 14px;
       background: rgba(15,17,23,.88); backdrop-filter: blur(20px);
       border-bottom: 1px solid var(--border);
     }

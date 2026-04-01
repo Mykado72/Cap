@@ -424,8 +424,22 @@ function urlB64ToUint8(b64) {
 
 async function enableNotifications(time, closeModal) {
   try {
+    // Vérifie si déjà bloqué avant même de demander
+    if (Notification.permission === 'denied') {
+      showToast('🚫 Notifications bloquées — autorise-les dans les réglages du navigateur');
+      showNotifBlockedHelp();
+      return;
+    }
     const perm = await Notification.requestPermission();
-    if (perm !== 'granted') { showToast('Permission refusée — vérifie les réglages'); return; }
+    if (perm !== 'granted') {
+      if (perm === 'denied') {
+        showToast('🚫 Notifications bloquées — autorise-les dans les réglages du navigateur');
+        showNotifBlockedHelp();
+      } else {
+        showToast('Permission refusée — réessaie');
+      }
+      return;
+    }
     const keyRes = await fetch(`${BACKEND_URL}/vapid-public-key`);
     const { key } = await keyRes.json();
     const sw  = await navigator.serviceWorker.ready;
@@ -461,6 +475,48 @@ async function updateNotifTime(time) {
       body: JSON.stringify({ endpoint: notifState.endpoint, notifyAt: time })
     });
   } catch (e) { console.error(e); }
+}
+
+// ─── Notifications bloquées — aide ───────────────────────────────────────────
+function showNotifBlockedHelp() {
+  const isAndroid = /android/i.test(navigator.userAgent);
+  const isIOS = /iphone|ipad/i.test(navigator.userAgent);
+  let instructions = '';
+  if (isAndroid) {
+    instructions = `
+      <ol class="help-steps">
+        <li>Ouvre les <strong>Réglages</strong> de Chrome (⋮ en haut à droite)</li>
+        <li>Va dans <strong>Paramètres du site → Notifications</strong></li>
+        <li>Trouve ce site et passe-le en <strong>Autoriser</strong></li>
+        <li>Reviens dans l'app et réessaie</li>
+      </ol>`;
+  } else if (isIOS) {
+    instructions = `
+      <ol class="help-steps">
+        <li>Ouvre <strong>Réglages iPhone → Applications → Safari</strong></li>
+        <li>Va dans <strong>Réglages des sites web → Notifications</strong></li>
+        <li>Trouve ce site et passe-le en <strong>Autoriser</strong></li>
+        <li>Reviens dans l'app et réessaie</li>
+      </ol>`;
+  } else {
+    instructions = `
+      <ol class="help-steps">
+        <li>Clique sur l'icône 🔒 dans la barre d'adresse</li>
+        <li>Va dans <strong>Autorisations du site → Notifications</strong></li>
+        <li>Passe en <strong>Autoriser</strong></li>
+        <li>Recharge la page et réessaie</li>
+      </ol>`;
+  }
+  showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title">Notifications bloquées 🚫</h2>
+    <p class="modal-subtitle">Tu as refusé les notifications précédemment. Pour les activer :</p>
+    ${instructions}
+    <style>
+      .help-steps { margin: 16px 0 8px 20px; display: flex; flex-direction: column; gap: 10px; }
+      .help-steps li { color: var(--text2); font-size: .9rem; line-height: 1.5; }
+      .help-steps strong { color: var(--text); }
+    </style>`);
 }
 
 // ─── Toast / Shake ────────────────────────────────────────────────────────────
