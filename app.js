@@ -1,19 +1,19 @@
 // ─── Cap! — app.js ────────────────────────────────────────────────────────────
 const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app';
-
 const STORAGE_KEY = 'cap_data';
 const NOTIF_KEY   = 'cap_notif';
+const HISTORY_KEY = 'cap_history';
 
-// ─── State ───────────────────────────────────────────────────────────────────
+// ─── State ────────────────────────────────────────────────────────────────────
 let state      = load();
 let notifState = loadNotif();
 let reviewQueue = [];
 let reviewIndex  = 0;
 
-// ─── Persistence ─────────────────────────────────────────────────────────────
+// ─── Persistence ──────────────────────────────────────────────────────────────
 function load() {
   try { const r = localStorage.getItem(STORAGE_KEY); if (r) return JSON.parse(r); } catch (_) {}
-  return { lastVisit: null, objectives: [], onboardingDone: false };
+  return { lastVisit: null, lastReview: null, objectives: [], onboardingDone: false };
 }
 function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
@@ -23,81 +23,130 @@ function loadNotif() {
 }
 function saveNotif() { localStorage.setItem(NOTIF_KEY, JSON.stringify(notifState)); }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+function loadHistory() {
+  try { const r = localStorage.getItem(HISTORY_KEY); if (r) return JSON.parse(r); } catch (_) {}
+  return [];
+}
+function saveHistory(h) { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); }
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function today() { return new Date().toISOString().slice(0, 10); }
 function daysSince(d) { if (!d) return Infinity; return Math.floor((Date.now() - new Date(d).getTime()) / 86400000); }
+
 function periodLabel(p) {
   const n = new Date();
-  if (p === 'year') return n.getFullYear().toString();
+  if (p === 'day')   return n.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (p === 'year')  return n.getFullYear().toString();
   if (p === 'month') return n.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
   const d = new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()));
   const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day);
   const ys = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   return `Semaine ${Math.ceil((((d - ys) / 86400000) + 1) / 7)} — ${n.getFullYear()}`;
 }
+
+function isoWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day);
+  const ys = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - ys) / 86400000) + 1) / 7);
+}
+
 function objectiveProgress(o) {
   if (o.mode === 'percent') return o.progress || 0;
   if (!o.tasks?.length) return 0;
   return Math.round((o.tasks.filter(t => t.done).length / o.tasks.length) * 100);
 }
+
 function progressColor(p) { return p >= 80 ? 'var(--green)' : p >= 40 ? 'var(--yellow)' : 'var(--red)'; }
-function periodName(p) { return p === 'year' ? 'Annuel' : p === 'month' ? 'Mensuel' : 'Hebdomadaire'; }
-function periodIcon(p)  { return p === 'year' ? '🎯' : p === 'month' ? '📅' : '📌'; }
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function periodName(p) { return p === 'day' ? 'Quotidien' : p === 'week' ? 'Hebdomadaire' : p === 'month' ? 'Mensuel' : 'Annuel'; }
+function periodIcon(p)  { return p === 'day' ? '☀️' : p === 'week' ? '📌' : p === 'month' ? '📅' : '🎯'; }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function formatDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) +
     ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
 
-// ─── Onboarding — suggestions d'objectifs ────────────────────────────────────
+// ─── Réinitialisation automatique ─────────────────────────────────────────────
+function shouldReset(obj) {
+  const ref = obj.lastResetAt || obj.createdAt;
+  if (!ref) return false;
+  const refDate = new Date(ref);
+  const now = new Date();
+  if (obj.period === 'day')   return ref.slice(0, 10) !== today();
+  if (obj.period === 'week')  return isoWeek(now) !== isoWeek(refDate) || now.getFullYear() !== refDate.getFullYear();
+  if (obj.period === 'month') return now.getMonth() !== refDate.getMonth() || now.getFullYear() !== refDate.getFullYear();
+  if (obj.period === 'year')  return now.getFullYear() !== refDate.getFullYear();
+  return false;
+}
+
+function snapshotObjective(obj, trigger = 'manual') {
+  const history = loadHistory();
+  const pct = objectiveProgress(obj);
+  history.push({
+    id: uid(),
+    date: new Date().toISOString(),
+    objectiveId: obj.id,
+    title: obj.title,
+    period: obj.period,
+    mode: obj.mode,
+    progress: pct,
+    tasks: obj.mode === 'list' ? obj.tasks.map(t => ({ ...t })) : [],
+    status: pct >= 100 ? 'atteint' : pct >= 50 ? 'partiel' : 'insuffisant',
+    trigger,
+    note: (obj.journal || []).find(e => e.date?.slice(0,10) === today())?.note || ''
+  });
+  saveHistory(history);
+}
+
+function resetObjective(obj) {
+  obj.progress = 0;
+  if (obj.tasks) obj.tasks = obj.tasks.map(t => ({ ...t, done: false }));
+  obj.lastResetAt = new Date().toISOString();
+  obj.updatedAt   = new Date().toISOString();
+  obj.journal     = [];
+}
+
+function autoReset() {
+  const active = state.objectives.filter(o => !o.archived);
+  let changed = false;
+  active.forEach(obj => {
+    if (shouldReset(obj)) {
+      snapshotObjective(obj, 'auto');
+      resetObjective(obj);
+      changed = true;
+    }
+  });
+  if (changed) save();
+  return changed;
+}
+
+// ─── Onboarding ───────────────────────────────────────────────────────────────
 const SUGGESTIONS = [
-  {
-    emoji: '🚭', title: "J'arrête de fumer", period: 'year', mode: 'list',
-    tasks: ["Ne pas acheter de cigarettes aujourd'hui", "Appeler un proche si envie forte", "Télécharger une app d'aide au sevrage", "Consulter un médecin ou tabacologue"]
-  },
-  {
-    emoji: '🚬', title: "Je réduis ma consommation de tabac", period: 'month', mode: 'list',
-    tasks: ["Passer de 20 à 15 cigarettes/jour cette semaine", "Eviter de fumer après les repas", "Repousser la première cigarette d'1h chaque matin", "Tenir un journal de ma consommation"]
-  },
-  {
-    emoji: '🍎', title: "J'arrête de grignoter", period: 'month', mode: 'list',
-    tasks: ["Préparer des encas sains à la maison", "Ne pas acheter de biscuits ou chips", "Boire un grand verre d'eau avant de craquer", "Identifier mes déclencheurs (stress, ennui…)"]
-  },
-  {
-    emoji: '❤️', title: "Prendre soin de ma santé", period: 'year', mode: 'list',
-    tasks: ["Prendre rendez-vous chez le médecin généraliste", "Faire une prise de sang annuelle", "Consulter le dentiste", "Faire contrôler ma vue", "Consulter le dermatologue"]
-  },
-  {
-    emoji: '🏃', title: "Bouger davantage", period: 'month', mode: 'list',
-    tasks: ["Marcher 30 min par jour", "Prendre les escaliers plutôt que l'ascenseur", "M'inscrire à une activité sportive", "Faire du vélo ou de la course le week-end"]
-  },
-  {
-    emoji: '😴', title: "Mieux dormir", period: 'month', mode: 'list',
-    tasks: ["Me coucher avant minuit", "Arrêter les écrans 30 min avant de dormir", "Garder une heure de réveil fixe", "Créer une routine du soir apaisante"]
-  },
-  {
-    emoji: '💰', title: "Mieux gérer mon budget", period: 'month', mode: 'list',
-    tasks: ["Noter toutes mes dépenses cette semaine", "Préparer mes repas plutôt que commander", "Annuler les abonnements inutilisés", "Mettre de côté 10% de mes revenus"]
-  },
-  {
-    emoji: '📵', title: "Réduire le temps d'écran", period: 'month', mode: 'list',
-    tasks: ["Limiter les réseaux sociaux à 30 min/jour", "Pas de téléphone pendant les repas", "Mode avion une heure avant de dormir", "Lire un livre à la place du scroll"]
-  },
-  {
-    emoji: '🧘', title: "Prendre du temps pour moi", period: 'month', mode: 'percent',
-    tasks: []
-  },
-  {
-    emoji: '📚', title: "Lire davantage", period: 'month', mode: 'list',
-    tasks: ["Lire 20 pages par jour", "Toujours avoir un livre en cours", "Rejoindre un club de lecture", "Finir un livre ce mois-ci"]
-  },
+  { emoji: '🚭', title: "J'arrête de fumer", period: 'year', mode: 'list',
+    tasks: ["Ne pas acheter de cigarettes aujourd'hui","Appeler un proche si envie forte","Télécharger une app d'aide au sevrage","Consulter un médecin ou tabacologue"] },
+  { emoji: '🚬', title: "Je réduis ma consommation de tabac", period: 'month', mode: 'list',
+    tasks: ["Passer de 20 à 15 cigarettes/jour cette semaine","Eviter de fumer après les repas","Repousser la première cigarette d'1h chaque matin","Tenir un journal de ma consommation"] },
+  { emoji: '🍎', title: "J'arrête de grignoter", period: 'month', mode: 'list',
+    tasks: ["Préparer des encas sains à la maison","Ne pas acheter de biscuits ou chips","Boire un grand verre d'eau avant de craquer","Identifier mes déclencheurs (stress, ennui…)"] },
+  { emoji: '❤️', title: "Prendre soin de ma santé", period: 'year', mode: 'list',
+    tasks: ["Prendre rendez-vous chez le médecin généraliste","Faire une prise de sang annuelle","Consulter le dentiste","Faire contrôler ma vue","Consulter le dermatologue"] },
+  { emoji: '🏃', title: "Bouger davantage", period: 'month', mode: 'list',
+    tasks: ["Marcher 30 min par jour","Prendre les escaliers plutôt que l'ascenseur","M'inscrire à une activité sportive","Faire du vélo ou de la course le week-end"] },
+  { emoji: '😴', title: "Mieux dormir", period: 'month', mode: 'list',
+    tasks: ["Me coucher avant minuit","Arrêter les écrans 30 min avant de dormir","Garder une heure de réveil fixe","Créer une routine du soir apaisante"] },
+  { emoji: '💰', title: "Mieux gérer mon budget", period: 'month', mode: 'list',
+    tasks: ["Noter toutes mes dépenses cette semaine","Préparer mes repas plutôt que commander","Annuler les abonnements inutilisés","Mettre de côté 10% de mes revenus"] },
+  { emoji: '📵', title: "Réduire le temps d'écran", period: 'month', mode: 'list',
+    tasks: ["Limiter les réseaux sociaux à 30 min/jour","Pas de téléphone pendant les repas","Mode avion une heure avant de dormir","Lire un livre à la place du scroll"] },
+  { emoji: '🧘', title: "Prendre du temps pour moi", period: 'month', mode: 'percent', tasks: [] },
+  { emoji: '📚', title: "Lire davantage", period: 'month', mode: 'list',
+    tasks: ["Lire 20 pages par jour","Toujours avoir un livre en cours","Rejoindre un club de lecture","Finir un livre ce mois-ci"] },
 ];
 
 function showOnboarding() {
   const selected = new Set();
-
   const screen = document.createElement('div');
   screen.className = 'onboard-screen';
   document.body.appendChild(screen);
@@ -113,79 +162,59 @@ function showOnboarding() {
         </div>
         <p class="onboard-hint">Sélectionne ceux qui te parlent :</p>
         <div class="suggest-grid">
-          ${SUGGESTIONS.map((s, i) => `
-            <button class="suggest-card ${selected.has(i) ? 'selected' : ''}" data-i="${i}">
+          ${SUGGESTIONS.map((s,i) => `
+            <button class="suggest-card ${selected.has(i)?'selected':''}" data-i="${i}">
               <span class="suggest-emoji">${s.emoji}</span>
               <span class="suggest-label">${s.title}</span>
-              ${selected.has(i) ? '<span class="suggest-check">✓</span>' : ''}
+              ${selected.has(i)?'<span class="suggest-check">✓</span>':''}
             </button>`).join('')}
         </div>
         <div class="onboard-actions">
           <button class="btn-secondary" id="btn-onboard-skip">Commencer sans objectif</button>
-          <button class="btn-primary ${selected.size === 0 ? 'disabled-soft' : ''}" id="btn-onboard-add">
-            ${selected.size > 0 ? `Ajouter (${selected.size}) →` : 'Ajouter →'}
+          <button class="btn-primary ${selected.size===0?'disabled-soft':''}" id="btn-onboard-add">
+            ${selected.size>0?`Ajouter (${selected.size}) →`:'Ajouter →'}
           </button>
         </div>
       </div>`;
-    bindOnboard();
-  }
-
-  function bindOnboard() {
     screen.querySelectorAll('.suggest-card').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const i = +btn.dataset.i;
-        if (selected.has(i)) selected.delete(i); else selected.add(i);
-        refresh();
-      });
+      btn.addEventListener('click', () => { const i=+btn.dataset.i; if(selected.has(i))selected.delete(i);else selected.add(i); refresh(); });
     });
     screen.querySelector('#btn-onboard-skip').addEventListener('click', finish);
     screen.querySelector('#btn-onboard-add').addEventListener('click', () => {
-      if (selected.size === 0) { showToast('Sélectionne au moins un objectif'); return; }
+      if(selected.size===0){showToast('Sélectionne au moins un objectif');return;}
       selected.forEach(i => {
         const s = SUGGESTIONS[i];
-        state.objectives.push({
-          id: uid(), title: s.title, period: s.period, periodLabel: periodLabel(s.period),
-          mode: s.mode, progress: 0,
-          tasks: s.mode === 'list' ? s.tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
-          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-          archived: false, journal: []
-        });
+        state.objectives.push({ id:uid(), title:s.title, period:s.period, periodLabel:periodLabel(s.period),
+          mode:s.mode, progress:0, tasks:s.mode==='list'?s.tasks.map(l=>({id:uid(),label:l,done:false})):[],
+          createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(),
+          lastResetAt:new Date().toISOString(), archived:false, journal:[] });
       });
       save(); finish();
     });
   }
-
   function finish() {
-    state.onboardingDone = true; save();
+    state.onboardingDone=true; save();
     screen.classList.remove('visible');
-    screen.addEventListener('transitionend', () => { screen.remove(); render(); }, { once: true });
+    screen.addEventListener('transitionend', ()=>{screen.remove();render();},{once:true});
   }
-
   refresh();
-}
-
-// ─── Review ───────────────────────────────────────────────────────────────────
-function checkReview() {
-  if (daysSince(state.lastVisit) < 1) return;
-  const active = state.objectives.filter(o => !o.archived);
-  if (!active.length) return;
-  reviewQueue = active; reviewIndex = 0; showReviewModal();
 }
 
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render() {
-  const periods = ['year', 'month', 'week'];
+  const periods = ['day','week','month','year'];
   document.getElementById('app').innerHTML = `
     <header class="app-header">
       <div class="logo">Cap<span class="logo-bang">!</span></div>
       <div class="header-actions">
-        <button class="btn-icon" id="btn-archive">⌛</button>
-        <button class="btn-icon" id="btn-settings">⚙</button>
+        <button class="btn-icon" id="btn-review-now" title="Faire le point">✍️</button>
+        <button class="btn-icon" id="btn-history" title="Historique des bilans">📊</button>
+        <button class="btn-icon" id="btn-settings" title="Paramètres">⚙</button>
       </div>
     </header>
     <main class="main-content">
       ${periods.map(p => {
-        const list = state.objectives.filter(o => !o.archived && o.period === p);
+        const list = state.objectives.filter(o=>!o.archived&&o.period===p);
         return `
           <section class="period-section">
             <div class="section-header">
@@ -194,9 +223,9 @@ function render() {
               <button class="btn-add" data-period="${p}">+</button>
             </div>
             <div class="objectives-list">
-              ${list.length === 0
-                ? `<p class="empty-hint">Aucun objectif — <button class="link-btn" data-period="${p}">en ajouter un</button></p>`
-                : list.map(renderCard).join('')}
+              ${list.length===0
+                ?`<p class="empty-hint">Aucun objectif — <button class="link-btn" data-period="${p}">en ajouter un</button></p>`
+                :list.map(renderCard).join('')}
             </div>
           </section>`;
       }).join('')}
@@ -204,6 +233,7 @@ function render() {
     <div class="fab-container">
       <button class="fab" id="fab-main">+</button>
       <div class="fab-menu" id="fab-menu">
+        <button class="fab-item" data-period="day">☀️ Quotidien</button>
         <button class="fab-item" data-period="week">📌 Hebdo</button>
         <button class="fab-item" data-period="month">📅 Mensuel</button>
         <button class="fab-item" data-period="year">🎯 Annuel</button>
@@ -213,9 +243,8 @@ function render() {
 }
 
 function renderCard(obj) {
-  const pct = objectiveProgress(obj), color = progressColor(pct);
-  const journalEntries = (obj.journal || []).filter(e => e.note);
-  const journalCount = journalEntries.length;
+  const pct=objectiveProgress(obj), color=progressColor(pct);
+  const journalCount=(obj.journal||[]).filter(e=>e.note).length;
   return `
     <article class="obj-card">
       <div class="obj-card-top">
@@ -224,25 +253,24 @@ function renderCard(obj) {
           <h3 class="obj-title">${esc(obj.title)}</h3>
         </div>
         <div class="obj-actions">
-          <button class="btn-icon-sm journal-btn ${journalCount > 0 ? 'has-notes' : ''}" data-journal="${obj.id}" title="Journal${journalCount > 0 ? ` (${journalCount})` : ''}">📓</button>
-          <button class="btn-icon-sm" data-action="update"  data-id="${obj.id}">✎</button>
-          <button class="btn-icon-sm" data-action="archive" data-id="${obj.id}">✓</button>
-          <button class="btn-icon-sm danger" data-action="delete" data-id="${obj.id}">✕</button>
+          <button class="btn-icon-sm journal-btn ${journalCount>0?'has-notes':''}" data-journal="${obj.id}" title="Journal">📓</button>
+          <button class="btn-icon-sm" data-action="update" data-id="${obj.id}" title="Modifier">✎</button>
+          <button class="btn-icon-sm danger" data-action="delete" data-id="${obj.id}" title="Supprimer">✕</button>
         </div>
       </div>
       <div class="obj-progress-wrap">
         <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${pct}%;background:${color}"></div></div>
         <span class="progress-label" style="color:${color}">${pct}%</span>
       </div>
-      ${obj.mode === 'list' ? renderTaskList(obj, true) : ''}
-      ${journalCount > 0 ? renderLastJournalEntry(obj) : ''}
+      ${obj.mode==='list'?renderTaskList(obj,true):''}
+      ${journalCount>0?renderLastJournalEntry(obj):''}
     </article>`;
 }
 
 function renderLastJournalEntry(obj) {
-  const entries = (obj.journal || []).filter(e => e.note);
-  if (!entries.length) return '';
-  const last = entries[entries.length - 1];
+  const entries=(obj.journal||[]).filter(e=>e.note);
+  if(!entries.length) return '';
+  const last=entries[entries.length-1];
   return `
     <div class="journal-preview" data-journal="${obj.id}">
       <span class="journal-preview-icon">📓</span>
@@ -254,84 +282,72 @@ function renderLastJournalEntry(obj) {
 }
 
 function renderTaskList(obj, interactive) {
-  if (!obj.tasks?.length) return '<p class="empty-tasks">Aucune tâche.</p>';
-  return `<ul class="task-list">${obj.tasks.map(t => `
-    <li class="task-item ${t.done ? 'done' : ''}">
+  if(!obj.tasks?.length) return '<p class="empty-tasks">Aucune tâche.</p>';
+  return `<ul class="task-list">${obj.tasks.map(t=>`
+    <li class="task-item ${t.done?'done':''}">
       ${interactive
-        ? `<input type="checkbox" class="task-check" data-obj="${obj.id}" data-task="${t.id}" ${t.done ? 'checked' : ''}>`
-        : `<span class="task-check-static ${t.done ? 'checked' : ''}"></span>`}
+        ?`<input type="checkbox" class="task-check" data-obj="${obj.id}" data-task="${t.id}" ${t.done?'checked':''}>`
+        :`<span class="task-check-static ${t.done?'checked':''}"></span>`}
       <span class="task-label">${esc(t.label)}</span>
     </li>`).join('')}</ul>`;
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
 function bindEvents() {
-  const fab = document.getElementById('fab-main'), fabMenu = document.getElementById('fab-menu');
-  fab.addEventListener('click', () => fabMenu.classList.toggle('open'));
-  document.querySelectorAll('.fab-item, .btn-add, .link-btn').forEach(b =>
-    b.addEventListener('click', () => { fabMenu.classList.remove('open'); showAddModal(b.dataset.period); }));
-
-  // Actions sur les cartes (update, archive, delete)
-  document.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', e => {
+  const fab=document.getElementById('fab-main'), fabMenu=document.getElementById('fab-menu');
+  fab.addEventListener('click',()=>fabMenu.classList.toggle('open'));
+  document.querySelectorAll('.fab-item,.btn-add,.link-btn').forEach(b=>
+    b.addEventListener('click',()=>{fabMenu.classList.remove('open');showAddModal(b.dataset.period);}));
+  document.querySelectorAll('[data-action]').forEach(b=>b.addEventListener('click',e=>{
     e.stopPropagation();
-    const { action, id } = b.dataset;
-    if (action === 'delete')  confirmDelete(id);
-    if (action === 'archive') archiveObj(id);
-    if (action === 'update')  showUpdateModal(id);
+    const{action,id}=b.dataset;
+    if(action==='delete') confirmDelete(id);
+    if(action==='update') showUpdateModal(id);
   }));
-
-  // Bouton journal (data-journal) — bouton ET aperçu de note
-  document.querySelectorAll('[data-journal]').forEach(el => {
-    el.addEventListener('click', e => {
+  document.querySelectorAll('[data-journal]').forEach(el=>
+    el.addEventListener('click',e=>{e.stopPropagation();showJournalModal(el.dataset.journal);}));
+  document.querySelectorAll('.task-check[data-obj]').forEach(cb=>{
+    cb.addEventListener('change',e=>{
       e.stopPropagation();
-      showJournalModal(el.dataset.journal);
-    });
-  });
-
-  // Tâches cochables directement sur les cartes
-  document.querySelectorAll('.task-check[data-obj]').forEach(cb => {
-    cb.addEventListener('change', e => {
-      e.stopPropagation();
-      const obj = state.objectives.find(o => o.id === cb.dataset.obj);
-      const task = obj?.tasks?.find(t => t.id === cb.dataset.task);
-      if (task) {
-        task.done = cb.checked;
-        cb.closest('.task-item')?.classList.toggle('done', cb.checked);
-        const card = cb.closest('.obj-card');
-        const pct = objectiveProgress(obj);
-        const color = progressColor(pct);
-        const fill = card?.querySelector('.progress-bar-fill');
-        const label = card?.querySelector('.progress-label');
-        if (fill) { fill.style.width = pct + '%'; fill.style.background = color; }
-        if (label) { label.textContent = pct + '%'; label.style.color = color; }
+      const obj=state.objectives.find(o=>o.id===cb.dataset.obj);
+      const task=obj?.tasks?.find(t=>t.id===cb.dataset.task);
+      if(task){
+        task.done=cb.checked;
+        cb.closest('.task-item')?.classList.toggle('done',cb.checked);
+        const card=cb.closest('.obj-card');
+        const pct=objectiveProgress(obj), color=progressColor(pct);
+        const fill=card?.querySelector('.progress-bar-fill');
+        if(fill){fill.style.width=pct+'%';fill.style.background=color;}
+        const lbl=card?.querySelector('.progress-label');
+        if(lbl){lbl.textContent=pct+'%';lbl.style.color=color;}
         save();
       }
     });
   });
-
-  document.getElementById('btn-archive').addEventListener('click', showArchiveModal);
-  document.getElementById('btn-settings').addEventListener('click', showSettingsModal);
+  document.getElementById('btn-review-now').addEventListener('click',()=>startReview());
+  document.getElementById('btn-history').addEventListener('click',showHistoryModal);
+  document.getElementById('btn-settings').addEventListener('click',showSettingsModal);
 }
 
-// ─── Modal ────────────────────────────────────────────────────────────────────
+// ─── Modal générique ──────────────────────────────────────────────────────────
 function showModal(html, onClose) {
-  const ov = document.createElement('div');
-  ov.className = 'modal-overlay';
-  ov.innerHTML = `<div class="modal-box">${html}</div>`;
+  const ov=document.createElement('div');
+  ov.className='modal-overlay';
+  ov.innerHTML=`<div class="modal-box">${html}</div>`;
   document.body.appendChild(ov);
-  requestAnimationFrame(() => ov.classList.add('visible'));
-  function close() {
+  requestAnimationFrame(()=>ov.classList.add('visible'));
+  function close(){
     ov.classList.remove('visible');
-    ov.addEventListener('transitionend', () => { ov.remove(); onClose?.(); }, { once: true });
+    ov.addEventListener('transitionend',()=>{ov.remove();onClose?.();},{once:true});
   }
-  ov.addEventListener('click', e => { if (e.target === ov) close(); });
-  ov.querySelector('.modal-close')?.addEventListener('click', close);
-  return { close, overlay: ov };
+  ov.addEventListener('click',e=>{if(e.target===ov)close();});
+  ov.querySelector('.modal-close')?.addEventListener('click',close);
+  return{close,overlay:ov};
 }
 
-// ─── Add ──────────────────────────────────────────────────────────────────────
+// ─── Ajout ────────────────────────────────────────────────────────────────────
 function showAddModal(period) {
-  const { close, overlay } = showModal(`
+  const{close,overlay}=showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Nouvel objectif <span class="period-tag">${periodName(period)}</span></h2>
     <label class="field-label">Titre</label>
@@ -351,78 +367,89 @@ function showAddModal(period) {
     </div>
     <button class="btn-primary" id="btn-save-new">Créer l'objectif</button>`);
 
-  let mode = 'percent'; const tasks = [];
-  overlay.querySelectorAll('.mode-btn').forEach(b => b.addEventListener('click', () => {
-    overlay.querySelectorAll('.mode-btn').forEach(x => x.classList.remove('active')); b.classList.add('active');
-    mode = b.dataset.mode; overlay.querySelector('#tasks-section').classList.toggle('hidden', mode !== 'list');
+  let mode='percent'; const tasks=[];
+  overlay.querySelectorAll('.mode-btn').forEach(b=>b.addEventListener('click',()=>{
+    overlay.querySelectorAll('.mode-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');
+    mode=b.dataset.mode;overlay.querySelector('#tasks-section').classList.toggle('hidden',mode!=='list');
   }));
-  const refreshTasks = () => {
-    const el = overlay.querySelector('#tasks-builder');
-    el.innerHTML = tasks.map((t, i) => `
+  const refreshTasks=()=>{
+    const el=overlay.querySelector('#tasks-builder');
+    el.innerHTML=tasks.map((t,i)=>`
       <div class="task-row">
         <span class="task-check-static"></span>
         <span class="task-row-label">${esc(t)}</span>
         <button class="btn-remove-task" data-i="${i}">✕</button>
       </div>`).join('');
-    el.querySelectorAll('.btn-remove-task').forEach(b => b.addEventListener('click', () => { tasks.splice(+b.dataset.i, 1); refreshTasks(); }));
+    el.querySelectorAll('.btn-remove-task').forEach(b=>b.addEventListener('click',()=>{tasks.splice(+b.dataset.i,1);refreshTasks();}));
   };
-  overlay.querySelector('#btn-add-task').addEventListener('click', () => {
-    const inp = overlay.querySelector('#new-task-input'), v = inp.value.trim();
-    if (v) { tasks.push(v); inp.value = ''; refreshTasks(); }
+  overlay.querySelector('#btn-add-task').addEventListener('click',()=>{
+    const inp=overlay.querySelector('#new-task-input'),v=inp.value.trim();
+    if(v){tasks.push(v);inp.value='';refreshTasks();}
   });
-  overlay.querySelector('#new-task-input').addEventListener('keydown', e => { if (e.key === 'Enter') overlay.querySelector('#btn-add-task').click(); });
-  overlay.querySelector('#btn-save-new').addEventListener('click', () => {
-    const title = overlay.querySelector('#new-title').value.trim();
-    if (!title) { shake(overlay.querySelector('#new-title')); return; }
-    if (mode === 'list' && !tasks.length) { shake(overlay.querySelector('#new-task-input')); return; }
-    state.objectives.push({ id: uid(), title, period, periodLabel: periodLabel(period), mode, progress: 0,
-      tasks: mode === 'list' ? tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), archived: false, journal: [] });
-    save(); close(); render();
+  overlay.querySelector('#new-task-input').addEventListener('keydown',e=>{if(e.key==='Enter')overlay.querySelector('#btn-add-task').click();});
+  overlay.querySelector('#btn-save-new').addEventListener('click',()=>{
+    const title=overlay.querySelector('#new-title').value.trim();
+    if(!title){shake(overlay.querySelector('#new-title'));return;}
+    if(mode==='list'&&!tasks.length){shake(overlay.querySelector('#new-task-input'));return;}
+    state.objectives.push({id:uid(),title,period,periodLabel:periodLabel(period),mode,progress:0,
+      tasks:mode==='list'?tasks.map(l=>({id:uid(),label:l,done:false})):[],
+      createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),
+      lastResetAt:new Date().toISOString(),archived:false,journal:[]});
+    save();close();render();
   });
 }
 
 // ─── Update ───────────────────────────────────────────────────────────────────
 function showUpdateModal(id) {
-  const obj = state.objectives.find(o => o.id === id); if (!obj) return;
-  const pct = objectiveProgress(obj);
-  const { close, overlay } = showModal(`
+  const obj=state.objectives.find(o=>o.id===id);if(!obj)return;
+  const pct=objectiveProgress(obj);
+  const{close,overlay}=showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Mise à jour</h2>
     <p class="modal-subtitle">${esc(obj.title)}</p>
-    ${obj.mode === 'percent' ? `
+    ${obj.mode==='percent'?`
       <label class="field-label">Progression : <span id="pd">${pct}%</span></label>
       <input type="range" id="pct-slider" class="pct-slider" min="0" max="100" value="${pct}">
-    ` : `<label class="field-label">Tâches</label>${renderTaskList(obj, true)}`}
+    `:`<label class="field-label">Tâches</label>${renderTaskList(obj,true)}`}
     <button class="btn-primary" id="btn-save-upd">Enregistrer</button>`);
-  if (obj.mode === 'percent') {
-    overlay.querySelector('#pct-slider').addEventListener('input', e => { overlay.querySelector('#pd').textContent = e.target.value + '%'; });
+  if(obj.mode==='percent'){
+    overlay.querySelector('#pct-slider').addEventListener('input',e=>{overlay.querySelector('#pd').textContent=e.target.value+'%';});
   } else {
-    overlay.querySelectorAll('.task-check').forEach(cb => cb.addEventListener('change', () => {
-      const t = obj.tasks.find(t => t.id === cb.dataset.task); if (t) t.done = cb.checked;
-      cb.closest('.task-item')?.classList.toggle('done', cb.checked);
+    overlay.querySelectorAll('.task-check').forEach(cb=>cb.addEventListener('change',()=>{
+      const t=obj.tasks.find(t=>t.id===cb.dataset.task);if(t)t.done=cb.checked;
+      cb.closest('.task-item')?.classList.toggle('done',cb.checked);
     }));
   }
-  overlay.querySelector('#btn-save-upd').addEventListener('click', () => {
-    if (obj.mode === 'percent') obj.progress = +overlay.querySelector('#pct-slider').value;
-    obj.updatedAt = new Date().toISOString(); save(); close(); render();
+  overlay.querySelector('#btn-save-upd').addEventListener('click',()=>{
+    if(obj.mode==='percent')obj.progress=+overlay.querySelector('#pct-slider').value;
+    obj.updatedAt=new Date().toISOString();save();close();render();
   });
 }
 
-// ─── Review enrichi (avec journal) ───────────────────────────────────────────
-function showReviewModal() {
-  if (reviewIndex >= reviewQueue.length) {
-    state.lastVisit = new Date().toISOString(); save(); render();
-    showToast('✓ Bilan terminé ! Continue comme ça 🎯'); return;
-  }
-  const obj = reviewQueue[reviewIndex], pct = objectiveProgress(obj);
-  // Pré-remplir avec le dernier commentaire du jour si déjà fait aujourd'hui
-  const todayEntry = (obj.journal || []).find(e => e.date?.slice(0,10) === today());
-  const lastNote = todayEntry?.note || '';
+// ─── Bilan ────────────────────────────────────────────────────────────────────
+function startReview() {
+  const active=state.objectives.filter(o=>!o.archived);
+  if(!active.length){showToast('Aucun objectif actif à passer en revue');return;}
+  reviewQueue=active;reviewIndex=0;showReviewModal();
+}
 
-  const { close, overlay } = showModal(`
+function finishReview() {
+  state.lastReview=new Date().toISOString();
+  state.lastVisit =new Date().toISOString();
+  save();
+  const hadResets=autoReset();
+  render();
+  showToast(hadResets?'✓ Bilan terminé ! Certains objectifs ont été réinitialisés 🔄':'✓ Bilan terminé ! Continue comme ça 🎯');
+}
+
+function showReviewModal() {
+  if(reviewIndex>=reviewQueue.length){finishReview();return;}
+  const obj=reviewQueue[reviewIndex],pct=objectiveProgress(obj);
+  const todayEntry=(obj.journal||[]).find(e=>e.date?.slice(0,10)===today());
+  const lastNote=todayEntry?.note||'';
+  const{close,overlay}=showModal(`
     <div class="review-header">
-      <span class="review-counter">${reviewIndex + 1} / ${reviewQueue.length}</span>
+      <span class="review-counter">${reviewIndex+1} / ${reviewQueue.length}</span>
       <span class="review-tag ${obj.period}">${periodIcon(obj.period)} ${periodName(obj.period)}</span>
     </div>
     <h2 class="modal-title">On fait le point ✍️</h2>
@@ -431,119 +458,126 @@ function showReviewModal() {
       <span class="review-pct-badge" style="color:${progressColor(pct)}">${pct}%</span>
       <span class="review-pct-label">actuellement</span>
     </div>
-    ${obj.mode === 'percent' ? `
+    ${obj.mode==='percent'?`
       <label class="field-label">Nouvelle progression : <span id="rd">${pct}%</span></label>
       <input type="range" id="review-slider" class="pct-slider" min="0" max="100" value="${pct}">
-    ` : `<label class="field-label">Tâches du moment</label>${renderTaskList(obj, true)}`}
-
+    `:`<label class="field-label">Tâches du moment</label>${renderTaskList(obj,true)}`}
     <div class="journal-section">
       <label class="field-label journal-label">📓 Mon ressenti du jour</label>
-      <textarea id="review-note" class="journal-textarea" placeholder="Comment ça se passe ? Qu'est-ce qui est difficile, qu'est-ce qui avance bien ?…" maxlength="1000">${esc(lastNote)}</textarea>
+      <textarea id="review-note" class="journal-textarea" placeholder="Comment ça se passe ?…" maxlength="1000">${esc(lastNote)}</textarea>
       <div class="journal-chars"><span id="journal-count">${lastNote.length}</span>/1000</div>
     </div>
-
     <div class="review-actions">
       <button class="btn-secondary" id="btn-skip">Passer</button>
       <button class="btn-primary" id="btn-next">Suivant →</button>
     </div>`);
 
-  if (obj.mode === 'percent') {
-    overlay.querySelector('#review-slider').addEventListener('input', e => { overlay.querySelector('#rd').textContent = e.target.value + '%'; });
+  if(obj.mode==='percent'){
+    overlay.querySelector('#review-slider').addEventListener('input',e=>{overlay.querySelector('#rd').textContent=e.target.value+'%';});
   } else {
-    overlay.querySelectorAll('.task-check').forEach(cb => cb.addEventListener('change', () => {
-      const t = obj.tasks.find(t => t.id === cb.dataset.task); if (t) t.done = cb.checked;
-      cb.closest('.task-item')?.classList.toggle('done', cb.checked);
+    overlay.querySelectorAll('.task-check').forEach(cb=>cb.addEventListener('change',()=>{
+      const t=obj.tasks.find(t=>t.id===cb.dataset.task);if(t)t.done=cb.checked;
+      cb.closest('.task-item')?.classList.toggle('done',cb.checked);
     }));
   }
+  const noteEl=overlay.querySelector('#review-note');
+  noteEl.addEventListener('input',()=>{overlay.querySelector('#journal-count').textContent=noteEl.value.length;});
 
-  const noteEl = overlay.querySelector('#review-note');
-  const countEl = overlay.querySelector('#journal-count');
-  noteEl.addEventListener('input', () => { countEl.textContent = noteEl.value.length; });
-
-  overlay.querySelector('#btn-next').addEventListener('click', () => {
-    if (obj.mode === 'percent') obj.progress = +overlay.querySelector('#review-slider').value;
-    const note = noteEl.value.trim();
-    if (!obj.journal) obj.journal = [];
-    // Mise à jour de l'entrée du jour si elle existe déjà, sinon nouvelle entrée
-    const existing = obj.journal.find(e => e.date?.slice(0,10) === today());
-    if (existing) {
-      existing.note = note;
-      existing.pct = objectiveProgress(obj);
-      existing.date = new Date().toISOString();
-    } else {
-      obj.journal.push({ id: uid(), date: new Date().toISOString(), note, pct: objectiveProgress(obj) });
-    }
-    obj.updatedAt = new Date().toISOString();
-    save(); close(); reviewIndex++; showReviewModal();
+  overlay.querySelector('#btn-next').addEventListener('click',()=>{
+    if(obj.mode==='percent')obj.progress=+overlay.querySelector('#review-slider').value;
+    const note=noteEl.value.trim();
+    if(!obj.journal)obj.journal=[];
+    const existing=obj.journal.find(e=>e.date?.slice(0,10)===today());
+    if(existing){existing.note=note;existing.pct=objectiveProgress(obj);existing.date=new Date().toISOString();}
+    else{obj.journal.push({id:uid(),date:new Date().toISOString(),note,pct:objectiveProgress(obj)});}
+    snapshotObjective(obj,'review');
+    obj.updatedAt=new Date().toISOString();
+    save();close();reviewIndex++;showReviewModal();
   });
-  overlay.querySelector('#btn-skip').addEventListener('click', () => { close(); reviewIndex++; showReviewModal(); });
+  overlay.querySelector('#btn-skip').addEventListener('click',()=>{close();reviewIndex++;showReviewModal();});
 }
 
 // ─── Journal ──────────────────────────────────────────────────────────────────
 function showJournalModal(id) {
-  const obj = state.objectives.find(o => o.id === id); if (!obj) return;
-  const entries = (obj.journal || []).filter(e => e.note).slice().reverse();
-
+  const obj=state.objectives.find(o=>o.id===id);if(!obj)return;
+  const entries=(obj.journal||[]).filter(e=>e.note).slice().reverse();
   showModal(`
     <button class="modal-close">✕</button>
     <div class="journal-modal-header">
       <span class="journal-modal-icon">📓</span>
-      <div>
-        <h2 class="modal-title">Journal intime</h2>
-        <p class="modal-subtitle">${esc(obj.title)}</p>
-      </div>
+      <div><h2 class="modal-title">Journal intime</h2><p class="modal-subtitle">${esc(obj.title)}</p></div>
     </div>
     ${!entries.length
-      ? `<div class="journal-empty">
-           <div class="journal-empty-icon">✍️</div>
-           <p>Aucune note pour l'instant.</p>
-           <p class="journal-empty-hint">Les notes apparaissent lors du bilan quotidien «&nbsp;On fait le point&nbsp;».</p>
-         </div>`
-      : `<div class="journal-entries">
-           ${entries.map(e => `
-             <div class="journal-entry">
-               <div class="journal-entry-meta">
-                 <span class="journal-entry-date">${formatDate(e.date)}</span>
-                 <span class="journal-entry-pct" style="color:${progressColor(e.pct || 0)}">${e.pct || 0}%</span>
-               </div>
-               <p class="journal-entry-text">${esc(e.note).replace(/\n/g, '<br>')}</p>
-             </div>`).join('')}
-         </div>`}`);
+      ?`<div class="journal-empty"><div class="journal-empty-icon">✍️</div><p>Aucune note pour l'instant.</p><p class="journal-empty-hint">Les notes apparaissent lors du bilan «&nbsp;On fait le point&nbsp;».</p></div>`
+      :`<div class="journal-entries">${entries.map(e=>`
+          <div class="journal-entry">
+            <div class="journal-entry-meta">
+              <span class="journal-entry-date">${formatDate(e.date)}</span>
+              <span class="journal-entry-pct" style="color:${progressColor(e.pct||0)}">${e.pct||0}%</span>
+            </div>
+            <p class="journal-entry-text">${esc(e.note).replace(/\n/g,'<br>')}</p>
+          </div>`).join('')}</div>`}`);
 }
 
-// ─── Archive ──────────────────────────────────────────────────────────────────
-function archiveObj(id) {
-  const obj = state.objectives.find(o => o.id === id); if (!obj) return;
-  obj.archived = true; obj.updatedAt = new Date().toISOString(); save(); render(); showToast('Objectif archivé ✓');
-}
-function showArchiveModal() {
-  const list = state.objectives.filter(o => o.archived);
-  const { close } = showModal(`
+// ─── Historique global des bilans ─────────────────────────────────────────────
+function showHistoryModal() {
+  const history=loadHistory().slice().reverse();
+  const byDate={};
+  history.forEach(h=>{const d=h.date.slice(0,10);if(!byDate[d])byDate[d]=[];byDate[d].push(h);});
+  const si=s=>s==='atteint'?'🏆':s==='partiel'?'📈':'📉';
+  const sl=s=>s==='atteint'?'Atteint':s==='partiel'?'Partiel':'Insuffisant';
+  const sc=s=>s==='atteint'?'green':s==='partiel'?'yellow':'red';
+  const entries=Object.entries(byDate);
+
+  showModal(`
     <button class="modal-close">✕</button>
-    <h2 class="modal-title">Archives</h2>
-    ${!list.length ? '<p class="empty-hint">Aucun objectif archivé.</p>' : list.map(obj => {
-      const pct = objectiveProgress(obj);
-      return `<div class="archive-item">
-        <div class="archive-item-info">
-          <span class="obj-period-badge ${obj.period}">${periodName(obj.period)}</span>
-          <span class="archive-title">${esc(obj.title)}</span>
-        </div>
-        <span class="archive-pct" style="color:${progressColor(pct)}">${pct}%</span>
-        <button class="btn-icon-sm" data-restore="${obj.id}">↩</button>
-        <button class="btn-icon-sm danger" data-del="${obj.id}">✕</button>
-      </div>`;
-    }).join('')}`);
-  document.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', () => {
-    const obj = state.objectives.find(o => o.id === b.dataset.restore);
-    if (obj) { obj.archived = false; save(); close(); render(); }
-  }));
-  document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
-    state.objectives = state.objectives.filter(o => o.id !== b.dataset.del); save(); close(); render();
-  }));
+    <h2 class="modal-title">Historique des bilans 📊</h2>
+    ${!entries.length
+      ?`<div class="journal-empty" style="margin-top:20px">
+          <div class="journal-empty-icon">📊</div>
+          <p>Aucun bilan enregistré.</p>
+          <p class="journal-empty-hint">Les bilans apparaissent après chaque "On fait le point".</p>
+        </div>`
+      :entries.map(([date,items])=>`
+        <div class="history-day">
+          <div class="history-day-header">
+            <span class="history-day-date">${new Date(date+'T12:00:00').toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</span>
+            <span class="history-day-count">${items.length} objectif${items.length>1?'s':''}</span>
+          </div>
+          ${items.map(h=>`
+            <div class="history-item">
+              <div class="history-item-top">
+                <span class="obj-period-badge ${h.period}">${periodName(h.period)}</span>
+                <span class="history-status ${sc(h.status)}">${si(h.status)} ${sl(h.status)}</span>
+              </div>
+              <div class="history-item-title">${esc(h.title)}</div>
+              <div class="history-item-progress">
+                <div class="progress-bar-bg" style="height:4px">
+                  <div class="progress-bar-fill" style="width:${h.progress}%;background:${progressColor(h.progress)}"></div>
+                </div>
+                <span style="color:${progressColor(h.progress)};font-family:'Syne',sans-serif;font-weight:700;font-size:.82rem">${h.progress}%</span>
+              </div>
+              ${h.mode==='list'&&h.tasks?.length?`
+                <div class="history-tasks">
+                  ${h.tasks.map(t=>`<span class="history-task ${t.done?'done':''}"><span class="history-task-dot"></span>${esc(t.label)}</span>`).join('')}
+                </div>`:''}
+              ${h.note?`<p class="history-note">📓 ${esc(h.note).replace(/\n/g,'<br>')}</p>`:''}
+            </div>`).join('')}
+        </div>`).join('')}
+    <div style="text-align:center;margin-top:20px;padding-bottom:4px">
+      <button class="btn-danger" id="btn-clear-history" style="width:auto;padding:8px 20px;font-size:.82rem;margin-top:0">🗑 Effacer tout l'historique</button>
+    </div>`);
+
+  document.getElementById('btn-clear-history')?.addEventListener('click',()=>{
+    if(!confirm("Effacer tout l'historique des bilans ?"))return;
+    saveHistory([]);showToast('Historique effacé');document.querySelector('.modal-close')?.click();
+  });
 }
+
+// ─── Supprimer ────────────────────────────────────────────────────────────────
 function confirmDelete(id) {
-  const obj = state.objectives.find(o => o.id === id); if (!obj) return;
-  const { close } = showModal(`
+  const obj=state.objectives.find(o=>o.id===id);if(!obj)return;
+  const{close}=showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Supprimer ?</h2>
     <p class="modal-subtitle">« ${esc(obj.title)} » sera supprimé définitivement, ainsi que tout son journal.</p>
@@ -551,233 +585,155 @@ function confirmDelete(id) {
       <button class="btn-secondary" id="cc">Annuler</button>
       <button class="btn-danger" id="cd">Supprimer</button>
     </div>`);
-  document.getElementById('cc').addEventListener('click', close);
-  document.getElementById('cd').addEventListener('click', () => {
-    state.objectives = state.objectives.filter(o => o.id !== id); save(); close(); render();
+  document.getElementById('cc').addEventListener('click',close);
+  document.getElementById('cd').addEventListener('click',()=>{
+    state.objectives=state.objectives.filter(o=>o.id!==id);save();close();render();
   });
 }
 
-// ─── Settings / Notifications ─────────────────────────────────────────────────
+// ─── Paramètres ───────────────────────────────────────────────────────────────
 function showSettingsModal() {
-  const supported = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
-
-  const { close, overlay } = showModal(`
+  const supported='Notification' in window&&'serviceWorker' in navigator&&'PushManager' in window;
+  const{close,overlay}=showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Paramètres</h2>
-
     <div class="settings-section">
       <div class="settings-row">
         <div class="settings-label">
           <span class="settings-icon">🔔</span>
-          <div>
-            <div class="settings-name">Notifications push</div>
-            <div class="settings-desc">Rappel quotidien pour faire le point</div>
-          </div>
+          <div><div class="settings-name">Notifications push</div><div class="settings-desc">Rappel quotidien pour faire le point</div></div>
         </div>
         <label class="toggle-switch">
-          <input type="checkbox" id="notif-toggle" ${notifState.enabled ? 'checked' : ''} ${!supported ? 'disabled' : ''}>
+          <input type="checkbox" id="notif-toggle" ${notifState.enabled?'checked':''} ${!supported?'disabled':''}>
           <span class="toggle-track"></span>
         </label>
       </div>
-
-      ${!supported ? `<p class="settings-warn">⚠️ Non supporté sur ce navigateur.<br>Sur iOS : installe l'app sur l'écran d'accueil via Safari.</p>` : ''}
-
-      <div class="settings-row ${notifState.enabled ? '' : 'dimmed'}" id="time-row">
+      ${!supported?`<p class="settings-warn">⚠️ Non supporté sur ce navigateur.<br>Sur iOS : installe l'app sur l'écran d'accueil via Safari.</p>`:''}
+      <div class="settings-row ${notifState.enabled?'':'dimmed'}" id="time-row">
         <div class="settings-label">
           <span class="settings-icon">🕐</span>
-          <div>
-            <div class="settings-name">Heure du rappel</div>
-            <div class="settings-desc">Chaque jour à cette heure (heure de Paris)</div>
-          </div>
+          <div><div class="settings-name">Heure du rappel</div><div class="settings-desc">Chaque jour à cette heure (heure de Paris)</div></div>
         </div>
-        <input type="time" id="notif-time" class="time-input" value="${notifState.notifyAt}" ${!notifState.enabled ? 'disabled' : ''}>
+        <input type="time" id="notif-time" class="time-input" value="${notifState.notifyAt}" ${!notifState.enabled?'disabled':''}>
       </div>
-
-      <div class="notif-status ${notifState.enabled ? 'on' : 'off'}">
-        ${notifState.enabled ? `🔔 Activées — rappel à ${notifState.notifyAt}` : '🔕 Désactivées'}
+      <div class="notif-status ${notifState.enabled?'on':'off'}">
+        ${notifState.enabled?`🔔 Activées — rappel à ${notifState.notifyAt}`:'🔕 Désactivées'}
       </div>
     </div>
-
     <div class="settings-actions">
-      <button class="btn-secondary small" id="btn-test" ${!notifState.enabled ? 'disabled' : ''}>Tester</button>
+      <button class="btn-secondary small" id="btn-test" ${!notifState.enabled?'disabled':''}>Tester</button>
       <button class="btn-primary" id="btn-save-settings">Enregistrer</button>
     </div>
-
     <div class="settings-clearzone">
-      <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">
-        🗑 Vider le cache de l'app
-      </a>
+      <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">🗑 Vider le cache de l'app</a>
     </div>`);
 
-  const toggle = overlay.querySelector('#notif-toggle');
-  const timeRow = overlay.querySelector('#time-row');
-  const timeInput = overlay.querySelector('#notif-time');
-  const testBtn = overlay.querySelector('#btn-test');
-
-  toggle.addEventListener('change', () => {
-    timeRow.classList.toggle('dimmed', !toggle.checked);
-    timeInput.disabled = !toggle.checked;
-    testBtn.disabled = !toggle.checked;
+  const toggle=overlay.querySelector('#notif-toggle');
+  const timeRow=overlay.querySelector('#time-row');
+  const timeInput=overlay.querySelector('#notif-time');
+  const testBtn=overlay.querySelector('#btn-test');
+  toggle.addEventListener('change',()=>{timeRow.classList.toggle('dimmed',!toggle.checked);timeInput.disabled=!toggle.checked;testBtn.disabled=!toggle.checked;});
+  overlay.querySelector('#btn-save-settings').addEventListener('click',async()=>{
+    const want=toggle.checked,time=timeInput.value||'20:00';
+    if(want&&!notifState.enabled){await enableNotifications(time,close);}
+    else if(!want&&notifState.enabled){await disableNotifications();notifState.enabled=false;notifState.endpoint=null;saveNotif();close();showToast('Notifications désactivées');}
+    else if(want&&notifState.enabled&&time!==notifState.notifyAt){await updateNotifTime(time);notifState.notifyAt=time;saveNotif();close();showToast(`🕐 Rappel mis à jour à ${time}`);}
+    else{close();}
   });
-
-  overlay.querySelector('#btn-save-settings').addEventListener('click', async () => {
-    const want = toggle.checked, time = timeInput.value || '20:00';
-    if (want && !notifState.enabled) {
-      await enableNotifications(time, close);
-    } else if (!want && notifState.enabled) {
-      await disableNotifications();
-      notifState.enabled = false; notifState.endpoint = null; saveNotif(); close();
-      showToast('Notifications désactivées');
-    } else if (want && notifState.enabled && time !== notifState.notifyAt) {
-      await updateNotifTime(time);
-      notifState.notifyAt = time; saveNotif(); close();
-      showToast(`🕐 Rappel mis à jour à ${time}`);
-    } else { close(); }
-  });
-
-  testBtn.addEventListener('click', async () => {
-    if (!notifState.endpoint) return;
-    testBtn.textContent = 'Envoi…'; testBtn.disabled = true;
-    try {
-      const r = await fetch(`${BACKEND_URL}/test-push`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: notifState.endpoint })
-      });
-      showToast(r.ok ? '✓ Notification de test envoyée !' : 'Erreur lors du test');
-    } catch { showToast('Impossible de joindre le serveur'); }
-    finally { testBtn.textContent = 'Tester'; testBtn.disabled = false; }
+  testBtn.addEventListener('click',async()=>{
+    if(!notifState.endpoint)return;
+    testBtn.textContent='Envoi…';testBtn.disabled=true;
+    try{
+      const r=await fetch(`${BACKEND_URL}/test-push`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint})});
+      showToast(r.ok?'✓ Notification de test envoyée !':'Erreur lors du test');
+    }catch{showToast('Impossible de joindre le serveur');}
+    finally{testBtn.textContent='Tester';testBtn.disabled=false;}
   });
 }
 
 // ─── Push helpers ─────────────────────────────────────────────────────────────
-function urlB64ToUint8(b64) {
-  const pad = '='.repeat((4 - b64.length % 4) % 4);
-  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
-  return new Uint8Array([...raw].map(c => c.charCodeAt(0)));
+function urlB64ToUint8(b64){const pad='='.repeat((4-b64.length%4)%4);const raw=atob((b64+pad).replace(/-/g,'+').replace(/_/g,'/'));return new Uint8Array([...raw].map(c=>c.charCodeAt(0)));}
+async function enableNotifications(time,closeModal){
+  try{
+    if(Notification.permission==='denied'){showNotifBlockedHelp();return;}
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){if(perm==='denied')showNotifBlockedHelp();else showToast('Permission refusée — réessaie');return;}
+    const{key}=await(await fetch(`${BACKEND_URL}/vapid-public-key`)).json();
+    const sw=await navigator.serviceWorker.ready;
+    const sub=await sw.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(key)});
+    const subJson=sub.toJSON();
+    await fetch(`${BACKEND_URL}/subscribe`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:subJson,notifyAt:time})});
+    notifState.enabled=true;notifState.notifyAt=time;notifState.endpoint=subJson.endpoint;
+    saveNotif();closeModal();showToast(`🔔 Notifications activées à ${time} ✓`);
+  }catch(err){console.error(err);showToast("Erreur lors de l'activation");}
 }
-
-async function enableNotifications(time, closeModal) {
-  try {
-    if (Notification.permission === 'denied') {
-      showToast('🚫 Notifications bloquées — autorise-les dans les réglages du navigateur');
-      showNotifBlockedHelp();
-      return;
-    }
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      if (perm === 'denied') {
-        showToast('🚫 Notifications bloquées — autorise-les dans les réglages du navigateur');
-        showNotifBlockedHelp();
-      } else {
-        showToast('Permission refusée — réessaie');
-      }
-      return;
-    }
-    const keyRes = await fetch(`${BACKEND_URL}/vapid-public-key`);
-    const { key } = await keyRes.json();
-    const sw  = await navigator.serviceWorker.ready;
-    const sub = await sw.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
-    const subJson = sub.toJSON();
-    await fetch(`${BACKEND_URL}/subscribe`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscription: subJson, notifyAt: time })
-    });
-    notifState.enabled = true; notifState.notifyAt = time; notifState.endpoint = subJson.endpoint;
-    saveNotif(); closeModal(); showToast(`🔔 Notifications activées à ${time} ✓`);
-  } catch (err) { console.error(err); showToast("Erreur lors de l'activation"); }
+async function disableNotifications(){
+  try{
+    if(notifState.endpoint)await fetch(`${BACKEND_URL}/unsubscribe`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint})});
+    const sub=await(await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if(sub)await sub.unsubscribe();
+  }catch(e){console.error(e);}
 }
-
-async function disableNotifications() {
-  try {
-    if (notifState.endpoint) {
-      await fetch(`${BACKEND_URL}/unsubscribe`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: notifState.endpoint })
-      });
-    }
-    const sw = await navigator.serviceWorker.ready;
-    const sub = await sw.pushManager.getSubscription();
-    if (sub) await sub.unsubscribe();
-  } catch (e) { console.error(e); }
+async function updateNotifTime(time){
+  try{await fetch(`${BACKEND_URL}/update-time`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint,notifyAt:time})});}
+  catch(e){console.error(e);}
 }
-
-async function updateNotifTime(time) {
-  try {
-    await fetch(`${BACKEND_URL}/update-time`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint: notifState.endpoint, notifyAt: time })
-    });
-  } catch (e) { console.error(e); }
-}
-
-// ─── Notifications bloquées — aide ───────────────────────────────────────────
-function showNotifBlockedHelp() {
-  const isAndroid = /android/i.test(navigator.userAgent);
-  const isIOS = /iphone|ipad/i.test(navigator.userAgent);
-  let instructions = '';
-  if (isAndroid) {
-    instructions = `
-      <ol class="help-steps">
-        <li>Ouvre les <strong>Réglages</strong> de Chrome (⋮ en haut à droite)</li>
-        <li>Va dans <strong>Paramètres du site → Notifications</strong></li>
-        <li>Trouve ce site et passe-le en <strong>Autoriser</strong></li>
-        <li>Reviens dans l'app et réessaie</li>
-      </ol>`;
-  } else if (isIOS) {
-    instructions = `
-      <ol class="help-steps">
-        <li>Ouvre <strong>Réglages iPhone → Applications → Safari</strong></li>
-        <li>Va dans <strong>Réglages des sites web → Notifications</strong></li>
-        <li>Trouve ce site et passe-le en <strong>Autoriser</strong></li>
-        <li>Reviens dans l'app et réessaie</li>
-      </ol>`;
-  } else {
-    instructions = `
-      <ol class="help-steps">
-        <li>Clique sur l'icône 🔒 dans la barre d'adresse</li>
-        <li>Va dans <strong>Autorisations du site → Notifications</strong></li>
-        <li>Passe en <strong>Autoriser</strong></li>
-        <li>Recharge la page et réessaie</li>
-      </ol>`;
-  }
+function showNotifBlockedHelp(){
+  const isIOS=/iphone|ipad/i.test(navigator.userAgent);
   showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Notifications bloquées 🚫</h2>
-    <p class="modal-subtitle">Tu as refusé les notifications précédemment. Pour les activer :</p>
-    ${instructions}
-    <style>
-      .help-steps { margin: 16px 0 8px 20px; display: flex; flex-direction: column; gap: 10px; }
-      .help-steps li { color: var(--text2); font-size: .9rem; line-height: 1.5; }
-      .help-steps strong { color: var(--text); }
-    </style>`);
+    <p class="modal-subtitle">Pour les activer :</p>
+    <ol class="help-steps">
+      ${isIOS
+        ?'<li>Ouvre <strong>Réglages → Applications → Safari</strong></li><li>Va dans <strong>Réglages des sites web → Notifications</strong></li><li>Trouve ce site et passe en <strong>Autoriser</strong></li>'
+        :'<li>Clique sur l\'icône 🔒 dans la barre d\'adresse</li><li>Va dans <strong>Autorisations du site → Notifications</strong></li><li>Passe en <strong>Autoriser</strong></li>'}
+      <li>Reviens dans l'app et réessaie</li>
+    </ol>
+    <style>.help-steps{margin:16px 0 8px 20px;display:flex;flex-direction:column;gap:10px}.help-steps li{color:var(--text2);font-size:.9rem;line-height:1.5}.help-steps strong{color:var(--text)}</style>`);
 }
 
 // ─── Toast / Shake ────────────────────────────────────────────────────────────
-function showToast(msg) {
-  const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
-  document.body.appendChild(t); requestAnimationFrame(() => t.classList.add('visible'));
-  setTimeout(() => { t.classList.remove('visible'); t.addEventListener('transitionend', () => t.remove(), { once: true }); }, 2800);
+function showToast(msg){
+  const t=document.createElement('div');t.className='toast';t.textContent=msg;
+  document.body.appendChild(t);requestAnimationFrame(()=>t.classList.add('visible'));
+  setTimeout(()=>{t.classList.remove('visible');t.addEventListener('transitionend',()=>t.remove(),{once:true});},3000);
 }
-function shake(el) { el.classList.add('shake'); el.addEventListener('animationend', () => el.classList.remove('shake'), { once: true }); }
+function shake(el){el.classList.add('shake');el.addEventListener('animationend',()=>el.classList.remove('shake'),{once:true});}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
-function init() {
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+function init(){
+  if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
-  // Migration : ajouter journal[] aux objectifs existants
-  if (state.objectives) {
-    state.objectives.forEach(o => { if (!o.journal) o.journal = []; });
+  // Migration : champs manquants
+  if(state.objectives){
+    state.objectives.forEach(o=>{
+      if(!o.journal)o.journal=[];
+      if(!o.lastResetAt)o.lastResetAt=o.createdAt||new Date().toISOString();
+    });
+    if(!state.lastReview)state.lastReview=state.lastVisit;
     save();
   }
 
-  if (!state.onboardingDone) {
-    showOnboarding();
-    return;
+  if(!state.onboardingDone){showOnboarding();return;}
+
+  // Réinitialisation auto silencieuse des périodes écoulées
+  autoReset();
+  render();
+
+  // ?review=1 depuis notification push → ouvrir le bilan
+  const params=new URLSearchParams(window.location.search);
+  if(params.get('review')==='1'){
+    window.history.replaceState({},'',window.location.pathname);
+    setTimeout(()=>startReview(),700);
+  } else {
+    // Bilan auto si pas encore fait aujourd'hui
+    const reviewedToday=state.lastReview?.slice(0,10)===today();
+    if(!reviewedToday&&state.objectives.filter(o=>!o.archived).length>0){
+      setTimeout(()=>startReview(),700);
+    }
   }
 
-  const wasToday = state.lastVisit?.slice(0, 10) === today();
-  render();
-  if (!wasToday && state.objectives.filter(o => !o.archived).length > 0) setTimeout(() => checkReview(), 600);
-  state.lastVisit = new Date().toISOString(); save();
+  state.lastVisit=new Date().toISOString();save();
 }
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded',init);

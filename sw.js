@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cap-v2.0.0';
+const CACHE_NAME = 'cap-v3.0.0';
 const ASSETS = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {
@@ -37,19 +37,21 @@ self.addEventListener('push', e => {
   );
 });
 
-// ─── Clic sur la notification → ouvrir l'app ─────────────────────────────────
+// ─── Clic sur la notification → ouvrir l'app avec ?review=1 ──────────────────
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const target = e.notification.data?.url || './';
+  // On ajoute ?review=1 pour déclencher le bilan automatiquement
+  const base = self.registration.scope; // ex: https://mykado72.github.io/Cap/
+  const target = base + '?review=1';
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-      // Si une fenêtre de l'app est déjà ouverte, on la focus
+      // Si l'app est déjà ouverte, naviguer vers ?review=1
       for (const client of list) {
-        if (client.url.includes(self.location.origin) && 'focus' in client) {
-          return client.focus();
+        if (client.url.startsWith(base) && 'navigate' in client) {
+          return client.focus().then(() => client.navigate(target));
         }
       }
-      // Sinon on en ouvre une nouvelle
+      // Sinon ouvrir une nouvelle fenêtre
       if (clients.openWindow) return clients.openWindow(target);
     })
   );

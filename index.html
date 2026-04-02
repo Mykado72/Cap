@@ -404,6 +404,40 @@
     /* ─── Journal btn sur les cartes ─── */
     .journal-btn { color: var(--text3) !important; }
     .journal-btn.has-notes { background: var(--accent-dim) !important; border-color: var(--accent) !important; color: var(--accent) !important; }
+
+    /* ─── Badge période Quotidien ─── */
+    .obj-period-badge.day { background: #2a1a0a; color: #f5a623; }
+    .review-tag.day { background: #2a1a0a; color: #f5a623; }
+
+    /* ─── Historique des bilans ─── */
+    .history-day { margin-top: 20px; }
+    .history-day-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 0 10px; border-bottom: 1px solid var(--border);
+      margin-bottom: 10px;
+    }
+    .history-day-date { font-family: 'Syne', sans-serif; font-weight: 700; font-size: .88rem; color: var(--text); text-transform: capitalize; }
+    .history-day-count { font-size: .75rem; color: var(--text3); }
+    .history-item {
+      background: var(--bg3); border-radius: var(--radius-sm);
+      padding: 12px 14px; margin-bottom: 8px;
+      border: 1px solid var(--border);
+    }
+    .history-item-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .history-item-title { font-family: 'Syne', sans-serif; font-weight: 600; font-size: .92rem; color: var(--text); margin-bottom: 8px; }
+    .history-item-progress { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .history-item-progress .progress-bar-bg { flex: 1; }
+    .history-status { font-size: .75rem; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+    .history-status.green { background: var(--green-dim); color: var(--green); }
+    .history-status.yellow { background: var(--yellow-dim); color: var(--yellow); }
+    .history-status.red { background: var(--red-dim); color: var(--red); }
+    .history-tasks { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+    .history-task { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--text3); }
+    .history-task.done { color: var(--text2); }
+    .history-task-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border2); flex-shrink: 0; }
+    .history-task.done .history-task-dot { background: var(--green); }
+    .history-task.done { text-decoration: line-through; }
+    .history-note { font-size: .82rem; color: var(--text2); line-height: 1.5; padding-top: 6px; border-top: 1px solid var(--border); margin-top: 6px; }
   </style>
 </head>
 <body>
