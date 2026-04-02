@@ -1,5 +1,7 @@
 // ─── Cap! — app.js ────────────────────────────────────────────────────────────
 const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app';
+// const BACKEND_URL = 'https://cap-backend-render.onrender.com';
+
 const STORAGE_KEY = 'cap_data';
 const NOTIF_KEY   = 'cap_notif';
 const HISTORY_KEY = 'cap_history';
