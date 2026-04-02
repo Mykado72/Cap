@@ -143,6 +143,17 @@ const SUGGESTIONS = [
   { emoji: '🧘', title: "Prendre du temps pour moi", period: 'month', mode: 'percent', tasks: [] },
   { emoji: '📚', title: "Lire davantage", period: 'month', mode: 'list',
     tasks: ["Lire 20 pages par jour","Toujours avoir un livre en cours","Rejoindre un club de lecture","Finir un livre ce mois-ci"] },
+  // ── Hebdomadaires ──
+  { emoji: '🥗', title: "Manger équilibré cette semaine", period: 'week', mode: 'list',
+    tasks: ["Cuisiner maison au moins 4 repas","Manger 5 fruits/légumes par jour","Éviter la junk food","Préparer ma liste de courses"] },
+  { emoji: '🏋️', title: "Faire du sport cette semaine", period: 'week', mode: 'list',
+    tasks: ["3 séances de sport minimum","Marcher 8000 pas/jour","Faire 15 min d'étirements","Aller à la piscine ou courir"] },
+  { emoji: '🧹', title: "Organiser mon espace de vie", period: 'week', mode: 'list',
+    tasks: ["Faire le ménage complet","Désencombrer un tiroir ou placard","Faire la lessive","Préparer mes affaires pour la semaine"] },
+  { emoji: '🤝', title: "Entretenir mes relations", period: 'week', mode: 'list',
+    tasks: ["Appeler un ami ou un proche","Répondre aux messages en attente","Planifier une sortie ou un dîner","Prendre des nouvelles de ma famille"] },
+  { emoji: '🎯', title: "Avancer sur mon projet perso", period: 'week', mode: 'list',
+    tasks: ["Définir les 3 priorités de la semaine","Consacrer 1h/jour à mon projet","Faire un bilan vendredi","Éliminer une distraction"] },
 ];
 
 function showOnboarding() {
@@ -161,14 +172,22 @@ function showOnboarding() {
           <p class="onboard-sub">Cap! est ton journal de bord personnel.<br>Choisis des objectifs pour commencer, ou crée les tiens.</p>
         </div>
         <p class="onboard-hint">Sélectionne ceux qui te parlent :</p>
-        <div class="suggest-grid">
-          ${SUGGESTIONS.map((s,i) => `
-            <button class="suggest-card ${selected.has(i)?'selected':''}" data-i="${i}">
-              <span class="suggest-emoji">${s.emoji}</span>
-              <span class="suggest-label">${s.title}</span>
-              ${selected.has(i)?'<span class="suggest-check">✓</span>':''}
-            </button>`).join('')}
-        </div>
+        ${['year','month','week'].map(period => {
+          const group = SUGGESTIONS.map((s,i)=>({...s,i})).filter(s=>s.period===period);
+          if(!group.length) return '';
+          const labels = {year:'🎯 Annuels', month:'📅 Mensuels', week:'📌 Hebdomadaires'};
+          return `<div class="onboard-group">
+            <div class="onboard-group-title">${labels[period]}</div>
+            <div class="suggest-grid">
+              ${group.map(s=>`
+                <button class="suggest-card ${selected.has(s.i)?'selected':''}" data-i="${s.i}">
+                  <span class="suggest-emoji">${s.emoji}</span>
+                  <span class="suggest-label">${s.title}</span>
+                  ${selected.has(s.i)?'<span class="suggest-check">✓</span>':''}
+                </button>`).join('')}
+            </div>
+          </div>`;
+        }).join('')}
         <div class="onboard-actions">
           <button class="btn-secondary" id="btn-onboard-skip">Commencer sans objectif</button>
           <button class="btn-primary ${selected.size===0?'disabled-soft':''}" id="btn-onboard-add">
@@ -403,25 +422,70 @@ function showAddModal(period) {
 function showUpdateModal(id) {
   const obj=state.objectives.find(o=>o.id===id);if(!obj)return;
   const pct=objectiveProgress(obj);
-  const{close,overlay}=showModal(`
-    <button class="modal-close">✕</button>
-    <h2 class="modal-title">Mise à jour</h2>
-    <p class="modal-subtitle">${esc(obj.title)}</p>
-    ${obj.mode==='percent'?`
-      <label class="field-label">Progression : <span id="pd">${pct}%</span></label>
-      <input type="range" id="pct-slider" class="pct-slider" min="0" max="100" value="${pct}">
-    `:`<label class="field-label">Tâches</label>${renderTaskList(obj,true)}`}
-    <button class="btn-primary" id="btn-save-upd">Enregistrer</button>`);
+
+  // Pour le mode liste : on travaille sur une copie locale des tâches
+  let localTasks = obj.mode==='list' ? obj.tasks.map(t=>({...t})) : [];
+
+  function buildModal() {
+    return `
+      <button class="modal-close">✕</button>
+      <h2 class="modal-title">Modifier</h2>
+      <p class="modal-subtitle">${esc(obj.title)}</p>
+      ${obj.mode==='percent'?`
+        <label class="field-label">Progression : <span id="pd">${pct}%</span></label>
+        <input type="range" id="pct-slider" class="pct-slider" min="0" max="100" value="${pct}">
+      `:`
+        <label class="field-label">Tâches</label>
+        <div id="edit-tasks-list">
+          ${localTasks.map((t,i)=>`
+            <div class="task-edit-row">
+              <input type="checkbox" class="task-check edit-task-cb" data-i="${i}" ${t.done?'checked':''}>
+              <span class="task-edit-label">${esc(t.label)}</span>
+              <button class="btn-remove-task edit-task-del" data-i="${i}" title="Supprimer">🗑</button>
+            </div>`).join('')}
+        </div>
+        <div class="task-add-row" style="margin-top:10px">
+          <input id="edit-task-input" class="field-input" placeholder="Nouvelle tâche…" maxlength="100">
+          <button class="btn-secondary small" id="btn-edit-add-task">Ajouter</button>
+        </div>
+      `}
+      <button class="btn-primary" id="btn-save-upd">Enregistrer</button>`;
+  }
+
+  const{close,overlay}=showModal(buildModal());
+
+  function rebindTaskList() {
+    const listEl = overlay.querySelector('#edit-tasks-list');
+    if(!listEl) return;
+    listEl.innerHTML = localTasks.map((t,i)=>`
+      <div class="task-edit-row">
+        <input type="checkbox" class="task-check edit-task-cb" data-i="${i}" ${t.done?'checked':''}>
+        <span class="task-edit-label">${esc(t.label)}</span>
+        <button class="btn-remove-task edit-task-del" data-i="${i}" title="Supprimer">🗑</button>
+      </div>`).join('');
+    listEl.querySelectorAll('.edit-task-cb').forEach(cb=>{
+      cb.addEventListener('change',()=>{ localTasks[+cb.dataset.i].done=cb.checked; });
+    });
+    listEl.querySelectorAll('.edit-task-del').forEach(btn=>{
+      btn.addEventListener('click',()=>{ localTasks.splice(+btn.dataset.i,1); rebindTaskList(); });
+    });
+  }
+
   if(obj.mode==='percent'){
     overlay.querySelector('#pct-slider').addEventListener('input',e=>{overlay.querySelector('#pd').textContent=e.target.value+'%';});
   } else {
-    overlay.querySelectorAll('.task-check').forEach(cb=>cb.addEventListener('change',()=>{
-      const t=obj.tasks.find(t=>t.id===cb.dataset.task);if(t)t.done=cb.checked;
-      cb.closest('.task-item')?.classList.toggle('done',cb.checked);
-    }));
+    rebindTaskList();
+    const addInput = overlay.querySelector('#edit-task-input');
+    overlay.querySelector('#btn-edit-add-task').addEventListener('click',()=>{
+      const v=addInput.value.trim();
+      if(v){ localTasks.push({id:uid(),label:v,done:false}); addInput.value=''; rebindTaskList(); }
+    });
+    addInput.addEventListener('keydown',e=>{ if(e.key==='Enter') overlay.querySelector('#btn-edit-add-task').click(); });
   }
+
   overlay.querySelector('#btn-save-upd').addEventListener('click',()=>{
-    if(obj.mode==='percent')obj.progress=+overlay.querySelector('#pct-slider').value;
+    if(obj.mode==='percent') obj.progress=+overlay.querySelector('#pct-slider').value;
+    else obj.tasks=localTasks;
     obj.updatedAt=new Date().toISOString();save();close();render();
   });
 }
@@ -625,6 +689,11 @@ function showSettingsModal() {
       <button class="btn-primary" id="btn-save-settings">Enregistrer</button>
     </div>
     <div class="settings-clearzone">
+      <div class="settings-data-actions">
+        <button class="btn-data" id="btn-export">⬆️ Exporter mes données</button>
+        <button class="btn-data" id="btn-import">⬇️ Importer des données</button>
+      </div>
+      <input type="file" id="import-file-input" accept=".json" style="display:none">
       <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">🗑 Vider le cache de l'app</a>
     </div>`);
 
@@ -648,6 +717,30 @@ function showSettingsModal() {
       showToast(r.ok?'✓ Notification de test envoyée !':'Erreur lors du test');
     }catch{showToast('Impossible de joindre le serveur');}
     finally{testBtn.textContent='Tester';testBtn.disabled=false;}
+  });
+
+  // Export
+  overlay.querySelector('#btn-export')?.addEventListener('click',()=>{
+    exportData();
+  });
+
+  // Import
+  const fileInput=overlay.querySelector('#import-file-input');
+  overlay.querySelector('#btn-import')?.addEventListener('click',()=>fileInput?.click());
+  fileInput?.addEventListener('change',()=>{
+    const file=fileInput.files[0];
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        importData(e.target.result);
+        close();
+      }catch(err){
+        showToast('❌ Fichier invalide ou corrompu');
+        console.error(err);
+      }
+    };
+    reader.readAsText(file);
   });
 }
 
@@ -691,6 +784,54 @@ function showNotifBlockedHelp(){
       <li>Reviens dans l'app et réessaie</li>
     </ol>
     <style>.help-steps{margin:16px 0 8px 20px;display:flex;flex-direction:column;gap:10px}.help-steps li{color:var(--text2);font-size:.9rem;line-height:1.5}.help-steps strong{color:var(--text)}</style>`);
+}
+
+// ─── Export / Import ──────────────────────────────────────────────────────────
+function exportData() {
+  const history = loadHistory();
+  const payload = {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    cap_data: state,
+    cap_history: history,
+    cap_notif: notifState,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], {type:'application/json'});
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  const date = new Date().toISOString().slice(0,10);
+  a.href     = url;
+  a.download = `cap-backup-${date}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast('✓ Données exportées !');
+}
+
+function importData(jsonText) {
+  const payload = JSON.parse(jsonText);
+  if(!payload || payload.version !== 1) throw new Error('Format non reconnu');
+  if(!payload.cap_data || !Array.isArray(payload.cap_data.objectives)) throw new Error('Données objectives manquantes');
+
+  // Migration : s'assurer que chaque objectif a les champs requis
+  payload.cap_data.objectives.forEach(o=>{
+    if(!o.journal)    o.journal=[];
+    if(!o.lastResetAt)o.lastResetAt=o.createdAt||new Date().toISOString();
+  });
+
+  // Écriture dans localStorage
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(payload.cap_data));
+  if(payload.cap_history) saveHistory(payload.cap_history);
+  if(payload.cap_notif)   localStorage.setItem(NOTIF_KEY, JSON.stringify(payload.cap_notif));
+
+  // Rechargement de l'état en mémoire
+  state      = load();
+  notifState = loadNotif();
+
+  showToast('✓ Données importées ! Rechargement…');
+  setTimeout(()=>{ window.location.reload(); }, 1500);
 }
 
 // ─── Toast / Shake ────────────────────────────────────────────────────────────
