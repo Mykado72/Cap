@@ -70,6 +70,36 @@ function formatDate(iso) {
     ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 }
 
+// ─── Streak ───────────────────────────────────────────────────────────────────
+// Calcule le nombre de jours consécutifs où un bilan a été fait.
+// On se base sur les snapshots de l'historique (trigger='review').
+function computeStreak() {
+  const history = loadHistory();
+  // Récupérer les dates distinctes où un bilan a été fait (trigger review)
+  const reviewDays = [...new Set(
+    history
+      .filter(h => h.trigger === 'review')
+      .map(h => h.date.slice(0, 10))
+  )].sort().reverse(); // du plus récent au plus ancien
+
+  if (!reviewDays.length) return 0;
+
+  // Si le dernier bilan n'est ni aujourd'hui ni hier → streak rompu
+  const todayStr = today();
+  const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (reviewDays[0] !== todayStr && reviewDays[0] !== yesterdayStr) return 0;
+
+  let streak = 1;
+  for (let i = 1; i < reviewDays.length; i++) {
+    const prev = new Date(reviewDays[i - 1]);
+    const curr = new Date(reviewDays[i]);
+    const diff = Math.round((prev - curr) / 86400000);
+    if (diff === 1) streak++;
+    else break;
+  }
+  return streak;
+}
+
 // ─── Réinitialisation automatique ─────────────────────────────────────────────
 function shouldReset(obj) {
   const ref = obj.lastResetAt || obj.createdAt;
@@ -224,9 +254,14 @@ function showOnboarding() {
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render() {
   const periods = ['day','week','month','year'];
+  const streak = computeStreak();
+  const streakHtml = streak > 0
+    ? `<div class="streak-badge" title="${streak} jour${streak>1?'s':''} de suite">🔥 ${streak}</div>`
+    : '';
+
   document.getElementById('app').innerHTML = `
     <header class="app-header">
-      <div class="logo">Cap<span class="logo-bang">!</span></div>
+      <div class="logo">Cap<span class="logo-bang">!</span>${streakHtml}</div>
       <div class="header-actions">
         <button class="btn-icon" id="btn-review-now" title="Faire le point">✍️</button>
         <button class="btn-icon" id="btn-history" title="Historique des bilans">📊</button>
@@ -243,7 +278,7 @@ function render() {
               <h2 class="section-title">${periodName(p)}</h2>
               <button class="btn-add" data-period="${p}">+</button>
             </div>
-            <div class="objectives-list">
+            <div class="objectives-list sortable-list" data-period="${p}">
               ${list.length===0
                 ?`<p class="empty-hint">Aucun objectif — <button class="link-btn" data-period="${p}">en ajouter un</button></p>`
                 :list.map(renderCard).join('')}
@@ -261,21 +296,23 @@ function render() {
       </div>
     </div>`;
   bindEvents();
+  initDragAndDrop();
 }
 
 function renderCard(obj) {
   const pct=objectiveProgress(obj), color=progressColor(pct);
   const journalCount=(obj.journal||[]).filter(e=>e.note).length;
   return `
-    <article class="obj-card">
+    <article class="obj-card" data-id="${obj.id}" draggable="true">
       <div class="obj-card-top">
+        <div class="drag-handle" title="Réordonner">⠿</div>
         <div class="obj-info">
           <span class="obj-period-badge ${obj.period}">${periodName(obj.period)}</span>
           <h3 class="obj-title">${esc(obj.title)}</h3>
         </div>
         <div class="obj-actions">
           <button class="btn-icon-sm journal-btn ${journalCount>0?'has-notes':''}" data-journal="${obj.id}" title="Journal">📓</button>
-          <button class="btn-icon-sm" data-action="update" data-id="${obj.id}" title="Modifier">✎</button>
+          <button class="btn-icon-sm" data-action="edit" data-id="${obj.id}" title="Modifier l'objectif">✎</button>
           <button class="btn-icon-sm danger" data-action="delete" data-id="${obj.id}" title="Supprimer">✕</button>
         </div>
       </div>
@@ -323,7 +360,7 @@ function bindEvents() {
     e.stopPropagation();
     const{action,id}=b.dataset;
     if(action==='delete') confirmDelete(id);
-    if(action==='update') showUpdateModal(id);
+    if(action==='edit')   showEditModal(id);
   }));
   document.querySelectorAll('[data-journal]').forEach(el=>
     el.addEventListener('click',e=>{e.stopPropagation();showJournalModal(el.dataset.journal);}));
@@ -420,75 +457,149 @@ function showAddModal(period) {
   });
 }
 
-// ─── Update ───────────────────────────────────────────────────────────────────
-function showUpdateModal(id) {
-  const obj=state.objectives.find(o=>o.id===id);if(!obj)return;
-  const pct=objectiveProgress(obj);
+// ─── Édition complète d'un objectif ──────────────────────────────────────────
+function showEditModal(id) {
+  const obj = state.objectives.find(o=>o.id===id); if(!obj) return;
 
-  // Pour le mode liste : on travaille sur une copie locale des tâches
-  let localTasks = obj.mode==='list' ? obj.tasks.map(t=>({...t})) : [];
+  // Copies locales éditables
+  let localTitle  = obj.title;
+  let localPeriod = obj.period;
+  let localMode   = obj.mode;
+  let localPct    = obj.progress || 0;
+  let localTasks  = obj.tasks ? obj.tasks.map(t=>({...t})) : [];
 
-  function buildModal() {
-    return `
-      <button class="modal-close">✕</button>
-      <h2 class="modal-title">Modifier</h2>
-      <p class="modal-subtitle">${esc(obj.title)}</p>
-      ${obj.mode==='percent'?`
-        <label class="field-label">Progression : <span id="pd">${pct}%</span></label>
-        <input type="range" id="pct-slider" class="pct-slider" min="0" max="100" value="${pct}">
-      `:`
-        <label class="field-label">Tâches</label>
-        <div id="edit-tasks-list">
-          ${localTasks.map((t,i)=>`
-            <div class="task-edit-row">
-              <input type="checkbox" class="task-check edit-task-cb" data-i="${i}" ${t.done?'checked':''}>
-              <span class="task-edit-label">${esc(t.label)}</span>
-              <button class="btn-remove-task edit-task-del" data-i="${i}" title="Supprimer">🗑</button>
-            </div>`).join('')}
-        </div>
-        <div class="task-add-row" style="margin-top:10px">
-          <input id="edit-task-input" class="field-input" placeholder="Nouvelle tâche…" maxlength="100">
-          <button class="btn-secondary small" id="btn-edit-add-task">Ajouter</button>
-        </div>
-      `}
-      <button class="btn-primary" id="btn-save-upd">Enregistrer</button>`;
-  }
+  const periods = ['day','week','month','year'];
 
-  const{close,overlay}=showModal(buildModal());
+  const {close, overlay} = showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title">Modifier l'objectif</h2>
 
-  function rebindTaskList() {
-    const listEl = overlay.querySelector('#edit-tasks-list');
-    if(!listEl) return;
-    listEl.innerHTML = localTasks.map((t,i)=>`
-      <div class="task-edit-row">
+    <label class="field-label">Titre</label>
+    <input id="edit-title" class="field-input" value="${esc(obj.title)}" maxlength="80">
+
+    <label class="field-label">Période</label>
+    <div class="period-toggle">
+      ${periods.map(p=>`
+        <button class="period-btn ${p===obj.period?'active':''}" data-p="${p}">
+          ${periodIcon(p)} ${periodName(p)}
+        </button>`).join('')}
+    </div>
+
+    <label class="field-label">Mode de suivi</label>
+    <div class="mode-toggle">
+      <button class="mode-btn ${obj.mode==='percent'?'active':''}" data-mode="percent">% Pourcentage</button>
+      <button class="mode-btn ${obj.mode==='list'?'active':''}" data-mode="list">☑ Liste de tâches</button>
+    </div>
+
+    <div id="edit-percent-section" class="${obj.mode==='percent'?'':'hidden'}">
+      <label class="field-label">Progression actuelle : <span id="edit-pct-display">${localPct}%</span></label>
+      <input type="range" id="edit-pct-slider" class="pct-slider" min="0" max="100" value="${localPct}">
+    </div>
+
+    <div id="edit-tasks-section" class="${obj.mode==='list'?'':'hidden'}">
+      <label class="field-label">Tâches <span style="color:var(--text3);font-weight:400;font-size:.75rem">(glisser pour réordonner)</span></label>
+      <div id="edit-tasks-list" class="edit-tasks-sortable"></div>
+      <div class="task-add-row" style="margin-top:8px">
+        <input id="edit-task-input" class="field-input" placeholder="Nouvelle tâche…" maxlength="100">
+        <button class="btn-secondary small" id="btn-edit-add-task">Ajouter</button>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="btn-save-edit">Enregistrer</button>`);
+
+  // ── Titre
+  overlay.querySelector('#edit-title').addEventListener('input', e => { localTitle = e.target.value; });
+
+  // ── Période
+  overlay.querySelectorAll('.period-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      overlay.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      localPeriod = btn.dataset.p;
+    });
+  });
+
+  // ── Mode
+  overlay.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      overlay.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      localMode = btn.dataset.mode;
+      overlay.querySelector('#edit-percent-section').classList.toggle('hidden', localMode !== 'percent');
+      overlay.querySelector('#edit-tasks-section').classList.toggle('hidden', localMode !== 'list');
+    });
+  });
+
+  // ── Slider %
+  overlay.querySelector('#edit-pct-slider').addEventListener('input', e => {
+    localPct = +e.target.value;
+    overlay.querySelector('#edit-pct-display').textContent = localPct + '%';
+  });
+
+  // ── Liste de tâches avec drag interne
+  function rebuildTaskList() {
+    const list = overlay.querySelector('#edit-tasks-list');
+    list.innerHTML = localTasks.map((t,i) => `
+      <div class="task-edit-row" draggable="true" data-i="${i}">
+        <span class="drag-handle-sm">⠿</span>
         <input type="checkbox" class="task-check edit-task-cb" data-i="${i}" ${t.done?'checked':''}>
         <span class="task-edit-label">${esc(t.label)}</span>
-        <button class="btn-remove-task edit-task-del" data-i="${i}" title="Supprimer">🗑</button>
+        <button class="btn-remove-task edit-task-del" data-i="${i}">✕</button>
       </div>`).join('');
-    listEl.querySelectorAll('.edit-task-cb').forEach(cb=>{
-      cb.addEventListener('change',()=>{ localTasks[+cb.dataset.i].done=cb.checked; });
+
+    // Checkboxes
+    list.querySelectorAll('.edit-task-cb').forEach(cb => {
+      cb.addEventListener('change', () => { localTasks[+cb.dataset.i].done = cb.checked; });
     });
-    listEl.querySelectorAll('.edit-task-del').forEach(btn=>{
-      btn.addEventListener('click',()=>{ localTasks.splice(+btn.dataset.i,1); rebindTaskList(); });
+    // Supprimer
+    list.querySelectorAll('.edit-task-del').forEach(btn => {
+      btn.addEventListener('click', () => { localTasks.splice(+btn.dataset.i, 1); rebuildTaskList(); });
+    });
+    // Drag interne pour réordonner les tâches
+    let dragIdx = null;
+    list.querySelectorAll('.task-edit-row').forEach(row => {
+      row.addEventListener('dragstart', e => {
+        dragIdx = +row.dataset.i;
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('drag-over-task'); });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over-task'));
+      row.addEventListener('drop', e => {
+        e.preventDefault(); row.classList.remove('drag-over-task');
+        const targetIdx = +row.dataset.i;
+        if (dragIdx === null || dragIdx === targetIdx) return;
+        const [moved] = localTasks.splice(dragIdx, 1);
+        localTasks.splice(targetIdx, 0, moved);
+        rebuildTaskList();
+      });
     });
   }
+  rebuildTaskList();
 
-  if(obj.mode==='percent'){
-    overlay.querySelector('#pct-slider').addEventListener('input',e=>{overlay.querySelector('#pd').textContent=e.target.value+'%';});
-  } else {
-    rebindTaskList();
-    const addInput = overlay.querySelector('#edit-task-input');
-    overlay.querySelector('#btn-edit-add-task').addEventListener('click',()=>{
-      const v=addInput.value.trim();
-      if(v){ localTasks.push({id:uid(),label:v,done:false}); addInput.value=''; rebindTaskList(); }
-    });
-    addInput.addEventListener('keydown',e=>{ if(e.key==='Enter') overlay.querySelector('#btn-edit-add-task').click(); });
-  }
+  // Ajouter tâche
+  const addInp = overlay.querySelector('#edit-task-input');
+  overlay.querySelector('#btn-edit-add-task').addEventListener('click', () => {
+    const v = addInp.value.trim();
+    if (v) { localTasks.push({id:uid(),label:v,done:false}); addInp.value=''; rebuildTaskList(); }
+  });
+  addInp.addEventListener('keydown', e => { if(e.key==='Enter') overlay.querySelector('#btn-edit-add-task').click(); });
 
-  overlay.querySelector('#btn-save-upd').addEventListener('click',()=>{
-    if(obj.mode==='percent') obj.progress=+overlay.querySelector('#pct-slider').value;
-    else obj.tasks=localTasks;
-    obj.updatedAt=new Date().toISOString();save();close();render();
+  // ── Sauvegarder
+  overlay.querySelector('#btn-save-edit').addEventListener('click', () => {
+    const newTitle = overlay.querySelector('#edit-title').value.trim();
+    if (!newTitle) { shake(overlay.querySelector('#edit-title')); return; }
+    if (localMode === 'list' && localTasks.length === 0) { shake(overlay.querySelector('#edit-task-input')); return; }
+
+    obj.title    = newTitle;
+    obj.period   = localPeriod;
+    obj.mode     = localMode;
+    obj.progress = localMode === 'percent' ? localPct : 0;
+    obj.tasks    = localMode === 'list' ? localTasks : [];
+    obj.updatedAt = new Date().toISOString();
+    save(); close(); render();
+    showToast('✓ Objectif mis à jour');
   });
 }
 
@@ -696,10 +807,6 @@ function showSettingsModal() {
         <button class="btn-data" id="btn-import">⬇️ Importer des données</button>
       </div>
       <input type="file" id="import-file-input" accept=".json" style="display:none">
-      <div class="settings-data-actions" style="margin-top:0">
-        <button class="btn-data" id="btn-show-suggestions">💡 Catalogue d'objectifs</button>
-        <button class="btn-data danger-data" id="btn-reset-all">🗑 Effacer toutes les données</button>
-      </div>
       <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">🗑 Vider le cache de l'app</a>
     </div>`);
 
@@ -748,100 +855,88 @@ function showSettingsModal() {
     };
     reader.readAsText(file);
   });
-
-  // Catalogue d'objectifs
-  overlay.querySelector('#btn-show-suggestions')?.addEventListener('click', () => {
-    close();
-    showSuggestionsModal();
-  });
-
-  // Effacer toutes les données
-  overlay.querySelector('#btn-reset-all')?.addEventListener('click', () => {
-    close();
-    confirmResetAll();
-  });
 }
 
-// ─── Catalogue d'objectifs (suggestions) ──────────────────────────────────────
-function showSuggestionsModal() {
-  const selected = new Set();
+// ─── Drag & Drop des cartes (réordonnancement) ────────────────────────────────
+function initDragAndDrop() {
+  let dragId = null, dragEl = null, placeholder = null;
 
-  const { close, overlay } = showModal(`
-    <button class="modal-close">✕</button>
-    <h2 class="modal-title">Catalogue d'objectifs 💡</h2>
-    <p class="modal-subtitle">Sélectionne des objectifs à ajouter à ta liste.</p>
-    <div class="suggest-grid" id="suggest-grid-modal" style="margin-bottom:0"></div>
-    <button class="btn-primary" id="btn-add-suggestions">Ajouter →</button>`);
-
-  function refresh() {
-    const grid = overlay.querySelector('#suggest-grid-modal');
-    grid.innerHTML = SUGGESTIONS.map((s, i) => `
-      <button class="suggest-card ${selected.has(i) ? 'selected' : ''}" data-i="${i}">
-        <span class="suggest-emoji">${s.emoji}</span>
-        <span class="suggest-label">${s.title}
-          <span class="suggest-period-hint">${periodIcon(s.period)} ${periodName(s.period)}</span>
-        </span>
-        ${selected.has(i) ? '<span class="suggest-check">✓</span>' : ''}
-      </button>`).join('');
-
-    grid.querySelectorAll('.suggest-card').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const i = +btn.dataset.i;
-        if (selected.has(i)) selected.delete(i); else selected.add(i);
-        refresh();
+  document.querySelectorAll('.sortable-list').forEach(list => {
+    list.querySelectorAll('.obj-card').forEach(card => {
+      card.addEventListener('dragstart', e => {
+        if (e.target.closest('button,input,textarea,.journal-preview')) { e.preventDefault(); return; }
+        dragId = card.dataset.id; dragEl = card;
+        card.classList.add('card-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        placeholder = document.createElement('div');
+        placeholder.className = 'card-placeholder';
+        placeholder.style.height = card.offsetHeight + 'px';
+      });
+      card.addEventListener('dragend', () => {
+        card.classList.remove('card-dragging');
+        placeholder?.remove(); placeholder = null; dragId = null; dragEl = null;
+      });
+      card.addEventListener('dragover', e => {
+        e.preventDefault(); if (!dragEl || card === dragEl) return;
+        const mid = card.getBoundingClientRect().top + card.offsetHeight / 2;
+        card.parentNode.insertBefore(placeholder, e.clientY < mid ? card : card.nextSibling);
+      });
+      card.addEventListener('drop', e => {
+        e.preventDefault(); if (!dragId || card.dataset.id === dragId) return;
+        saveNewOrder(list);
       });
     });
+    list.addEventListener('dragover', e => e.preventDefault());
+  });
 
-    const addBtn = overlay.querySelector('#btn-add-suggestions');
-    addBtn.textContent = selected.size > 0 ? `Ajouter (${selected.size}) →` : 'Ajouter →';
-    addBtn.style.opacity = selected.size === 0 ? '0.5' : '1';
-  }
-
-  refresh();
-
-  overlay.querySelector('#btn-add-suggestions').addEventListener('click', () => {
-    if (selected.size === 0) { showToast('Sélectionne au moins un objectif'); return; }
-    selected.forEach(i => {
-      const s = SUGGESTIONS[i];
-      // Eviter les doublons (même titre + même période)
-      const exists = state.objectives.some(o => !o.archived && o.title === s.title && o.period === s.period);
-      if (!exists) {
-        state.objectives.push({
-          id: uid(), title: s.title, period: s.period, periodLabel: periodLabel(s.period),
-          mode: s.mode, progress: 0,
-          tasks: s.mode === 'list' ? s.tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
-          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-          lastResetAt: new Date().toISOString(), archived: false, journal: []
-        });
+  // Touch drag
+  document.querySelectorAll('.obj-card .drag-handle').forEach(handle => {
+    let touchEl = null, clone = null, offY = 0;
+    handle.addEventListener('touchstart', e => {
+      const card = handle.closest('.obj-card');
+      touchEl = card; card.classList.add('card-dragging');
+      const rect = card.getBoundingClientRect();
+      offY = rect.top - e.touches[0].clientY;
+      clone = card.cloneNode(true);
+      clone.style.cssText = `position:fixed;left:${rect.left}px;width:${rect.width}px;top:${rect.top}px;z-index:999;pointer-events:none;opacity:.88;transition:none;`;
+      document.body.appendChild(clone);
+      e.preventDefault();
+    }, {passive:false});
+    handle.addEventListener('touchmove', e => {
+      if (!clone || !touchEl) return;
+      const y = e.touches[0].clientY;
+      clone.style.top = (y + offY) + 'px';
+      clone.style.display = 'none';
+      const target = document.elementFromPoint(e.touches[0].clientX, y)?.closest('.obj-card');
+      clone.style.display = '';
+      if (target && target !== touchEl) {
+        const mid = target.getBoundingClientRect().top + target.offsetHeight / 2;
+        target.parentNode.insertBefore(touchEl, y < mid ? target : target.nextSibling);
+      }
+      e.preventDefault();
+    }, {passive:false});
+    handle.addEventListener('touchend', () => {
+      clone?.remove(); clone = null;
+      if (touchEl) {
+        touchEl.classList.remove('card-dragging');
+        saveNewOrder(touchEl.closest('.sortable-list'));
+        touchEl = null;
       }
     });
-    save(); close(); render();
-    showToast(`✓ ${selected.size} objectif${selected.size > 1 ? 's' : ''} ajouté${selected.size > 1 ? 's' : ''} !`);
   });
 }
 
-// ─── Effacer toutes les données ───────────────────────────────────────────────
-function confirmResetAll() {
-  const { close } = showModal(`
-    <button class="modal-close">✕</button>
-    <h2 class="modal-title" style="color:var(--red)">⚠️ Tout effacer ?</h2>
-    <p class="modal-subtitle">Cette action supprimera <strong style="color:var(--text)">tous tes objectifs, tout l'historique et toutes tes notes</strong>. Elle est irréversible.</p>
-    <p style="font-size:.82rem;color:var(--text3);margin-top:8px">Les paramètres de notifications ne seront pas effacés.</p>
-    <div class="review-actions">
-      <button class="btn-secondary" id="cancel-reset">Annuler</button>
-      <button class="btn-danger" id="confirm-reset">Tout effacer</button>
-    </div>`);
-
-  document.getElementById('cancel-reset').addEventListener('click', close);
-  document.getElementById('confirm-reset').addEventListener('click', () => {
-    // Effacer objectifs + historique, réinitialiser l'état
-    state = { lastVisit: null, lastReview: null, objectives: [], onboardingDone: false };
-    save();
-    saveHistory([]);
-    close();
-    // Relancer l'onboarding
-    showOnboarding();
-  });
+function saveNewOrder(list) {
+  if (!list) return;
+  const period = list.dataset.period;
+  const newOrder = [...list.querySelectorAll('.obj-card')].map(c => c.dataset.id);
+  const periodObjs = state.objectives.filter(o => !o.archived && o.period === period);
+  const reordered  = newOrder.map(id => periodObjs.find(o => o.id === id)).filter(Boolean);
+  let pi = 0;
+  state.objectives = state.objectives.map(o =>
+    (!o.archived && o.period === period) ? reordered[pi++] : o
+  );
+  save();
 }
 
 // ─── Push helpers ─────────────────────────────────────────────────────────────

@@ -434,10 +434,53 @@
       display: flex; align-items: center; justify-content: center; gap: 5px;
     }
     .btn-data:hover { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
-    .btn-data.danger-data:hover { background: var(--red-dim); color: var(--red); border-color: var(--red); }
 
-    /* ─── Hint de période dans les suggestions ─── */
-    .suggest-period-hint { display: block; font-size: .72rem; color: var(--text3); margin-top: 2px; font-weight: 400; }
+    /* ─── Streak badge ─── */
+    .streak-badge {
+      display: inline-flex; align-items: center; gap: 3px;
+      font-family: 'Syne', sans-serif; font-weight: 700; font-size: .85rem;
+      background: linear-gradient(135deg, #ff6b35, #f5a623);
+      color: #fff; border-radius: 20px; padding: 2px 10px 2px 6px;
+      margin-left: 10px; vertical-align: middle;
+      box-shadow: 0 2px 8px rgba(245,166,35,.35);
+      animation: streakPop .4s cubic-bezier(.175,.885,.32,1.275) both;
+    }
+    @keyframes streakPop { from { transform: scale(.6); opacity:0; } to { transform: scale(1); opacity:1; } }
+
+    /* ─── Drag handle ─── */
+    .drag-handle {
+      color: var(--text3); cursor: grab; font-size: 1.1rem;
+      padding: 0 6px 0 0; flex-shrink: 0; touch-action: none;
+      user-select: none; line-height: 1;
+      transition: color .15s;
+    }
+    .drag-handle:active { cursor: grabbing; color: var(--text2); }
+    .drag-handle-sm {
+      color: var(--text3); cursor: grab; font-size: .9rem;
+      flex-shrink: 0; touch-action: none; user-select: none;
+    }
+    .card-dragging { opacity: .45; border: 2px dashed var(--accent) !important; }
+    .card-placeholder {
+      border-radius: var(--radius); border: 2px dashed var(--accent);
+      background: var(--accent-dim); margin-bottom: 10px;
+    }
+    .card-touch-clone { box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+    .drag-over-task { background: var(--accent-dim) !important; border-radius: var(--radius-sm); }
+
+    /* ─── Period toggle (modal édition) ─── */
+    .period-toggle {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px;
+    }
+    .period-btn {
+      padding: 8px 10px; background: var(--bg3); border: 1.5px solid var(--border);
+      color: var(--text2); border-radius: var(--radius-sm); font-size: .82rem;
+      cursor: pointer; font-family: 'DM Sans', sans-serif; text-align: center;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .period-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
+    /* ─── Edit tasks sortable ─── */
+    .edit-tasks-sortable { display: flex; flex-direction: column; gap: 5px; min-height: 10px; }
 
     /* ─── Badge période Quotidien ─── */
     .obj-period-badge.day { background: #2a1a0a; color: #f5a623; }
