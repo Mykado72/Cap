@@ -21,7 +21,7 @@ function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
 function loadNotif() {
   try { const r = localStorage.getItem(NOTIF_KEY); if (r) return JSON.parse(r); } catch (_) {}
-  return { enabled: false, notifyAt: '20:00', endpoint: null };
+  return { enabled: false, notifyAt: '20:00', notifyAt2: '', endpoint: null };
 }
 function saveNotif() { localStorage.setItem(NOTIF_KEY, JSON.stringify(notifState)); }
 
@@ -251,6 +251,63 @@ function showOnboarding() {
   refresh();
 }
 
+// ─── Confettis 🎉 ────────────────────────────────────────────────────────────
+function launchConfetti() {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:fixed;inset:0;z-index:9999;pointer-events:none;width:100%;height:100%';
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  const COLORS = ['#3ddc84','#5b7fff','#f5c542','#ff5f6d','#a78bfa','#f5a623','#fff'];
+  const COUNT   = 120;
+  const pieces  = Array.from({length: COUNT}, () => ({
+    x:  Math.random() * canvas.width,
+    y:  Math.random() * -canvas.height * 0.4 - 20,
+    w:  6 + Math.random() * 8,
+    h:  10 + Math.random() * 6,
+    r:  Math.random() * Math.PI * 2,
+    dr: (Math.random() - 0.5) * 0.25,
+    vx: (Math.random() - 0.5) * 4,
+    vy: 2 + Math.random() * 4,
+    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+    alpha: 1,
+  }));
+
+  let frame, start = null;
+  const DURATION = 3000;
+
+  function draw(ts) {
+    if (!start) start = ts;
+    const elapsed = ts - start;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    pieces.forEach(p => {
+      p.x  += p.vx;
+      p.y  += p.vy;
+      p.r  += p.dr;
+      p.vy += 0.12; // gravité
+      p.alpha = elapsed < DURATION * 0.6 ? 1 : 1 - (elapsed - DURATION * 0.6) / (DURATION * 0.4);
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.alpha);
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.r);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    });
+
+    if (elapsed < DURATION) {
+      frame = requestAnimationFrame(draw);
+    } else {
+      canvas.remove();
+    }
+  }
+  frame = requestAnimationFrame(draw);
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render() {
   const periods = ['day','week','month','year'];
@@ -378,6 +435,7 @@ function bindEvents() {
         if(fill){fill.style.width=pct+'%';fill.style.background=color;}
         const lbl=card?.querySelector('.progress-label');
         if(lbl){lbl.textContent=pct+'%';lbl.style.color=color;}
+        if(pct===100) launchConfetti();
         save();
       }
     });
@@ -599,6 +657,7 @@ function showEditModal(id) {
     obj.tasks    = localMode === 'list' ? localTasks : [];
     obj.updatedAt = new Date().toISOString();
     save(); close(); render();
+    if (objectiveProgress(obj) === 100) launchConfetti();
     showToast('✓ Objectif mis à jour');
   });
 }
@@ -669,6 +728,7 @@ function showReviewModal() {
     else{obj.journal.push({id:uid(),date:new Date().toISOString(),note,pct:objectiveProgress(obj)});}
     snapshotObjective(obj,'review');
     obj.updatedAt=new Date().toISOString();
+    if(objectiveProgress(obj)===100) launchConfetti();
     save();close();reviewIndex++;showReviewModal();
   });
   overlay.querySelector('#btn-skip').addEventListener('click',()=>{close();reviewIndex++;showReviewModal();});
@@ -789,12 +849,21 @@ function showSettingsModal() {
       <div class="settings-row ${notifState.enabled?'':'dimmed'}" id="time-row">
         <div class="settings-label">
           <span class="settings-icon">🕐</span>
-          <div><div class="settings-name">Heure du rappel</div><div class="settings-desc">Chaque jour à cette heure (heure de Paris)</div></div>
+          <div><div class="settings-name">1ère notification</div><div class="settings-desc">Heure de Paris</div></div>
         </div>
         <input type="time" id="notif-time" class="time-input" value="${notifState.notifyAt}" ${!notifState.enabled?'disabled':''}>
       </div>
+      <div class="settings-row ${notifState.enabled?'':'dimmed'}" id="time-row-2">
+        <div class="settings-label">
+          <span class="settings-icon">🕑</span>
+          <div><div class="settings-name">2ème notification</div><div class="settings-desc">Optionnelle — laisser vide pour désactiver</div></div>
+        </div>
+        <input type="time" id="notif-time2" class="time-input" value="${notifState.notifyAt2||''}" ${!notifState.enabled?'disabled':''}>
+      </div>
       <div class="notif-status ${notifState.enabled?'on':'off'}">
-        ${notifState.enabled?`🔔 Activées — rappel à ${notifState.notifyAt}`:'🔕 Désactivées'}
+        ${notifState.enabled
+          ? `🔔 ${notifState.notifyAt}${notifState.notifyAt2 ? ' · ' + notifState.notifyAt2 : ''}`
+          : '🔕 Désactivées'}
       </div>
 
       <div class="settings-row" style="margin-top:10px">
@@ -827,15 +896,33 @@ function showSettingsModal() {
 
   const toggle=overlay.querySelector('#notif-toggle');
   const timeRow=overlay.querySelector('#time-row');
+  const timeRow2=overlay.querySelector('#time-row-2');
   const timeInput=overlay.querySelector('#notif-time');
+  const timeInput2=overlay.querySelector('#notif-time2');
   const testBtn=overlay.querySelector('#btn-test');
-  toggle.addEventListener('change',()=>{timeRow.classList.toggle('dimmed',!toggle.checked);timeInput.disabled=!toggle.checked;testBtn.disabled=!toggle.checked;});
+  toggle.addEventListener('change',()=>{
+    const on=toggle.checked;
+    timeRow.classList.toggle('dimmed',!on);
+    timeRow2.classList.toggle('dimmed',!on);
+    timeInput.disabled=!on;
+    timeInput2.disabled=!on;
+    testBtn.disabled=!on;
+  });
   overlay.querySelector('#btn-save-settings').addEventListener('click',async()=>{
-    const want=toggle.checked,time=timeInput.value||'20:00';
-    if(want&&!notifState.enabled){await enableNotifications(time,close);}
-    else if(!want&&notifState.enabled){await disableNotifications();notifState.enabled=false;notifState.endpoint=null;saveNotif();close();showToast('Notifications désactivées');}
-    else if(want&&notifState.enabled&&time!==notifState.notifyAt){await updateNotifTime(time);notifState.notifyAt=time;saveNotif();close();showToast(`🕐 Rappel mis à jour à ${time}`);}
-    else{close();}
+    const want=toggle.checked;
+    const time=timeInput.value||'20:00';
+    const time2=timeInput2.value||'';
+    if(want&&!notifState.enabled){
+      await enableNotifications(time,time2,close);
+    } else if(!want&&notifState.enabled){
+      await disableNotifications();
+      notifState.enabled=false;notifState.endpoint=null;saveNotif();close();
+      showToast('Notifications désactivées');
+    } else if(want&&notifState.enabled&&(time!==notifState.notifyAt||time2!==notifState.notifyAt2)){
+      await updateNotifTime(time,time2);
+      notifState.notifyAt=time;notifState.notifyAt2=time2;saveNotif();close();
+      showToast(`🕐 Rappel mis à jour${time2?' · '+time2:''}`);
+    } else { close(); }
   });
   testBtn.addEventListener('click',async()=>{
     if(!notifState.endpoint)return;
@@ -1070,7 +1157,7 @@ function saveNewOrder(list) {
 
 // ─── Push helpers ─────────────────────────────────────────────────────────────
 function urlB64ToUint8(b64){const pad='='.repeat((4-b64.length%4)%4);const raw=atob((b64+pad).replace(/-/g,'+').replace(/_/g,'/'));return new Uint8Array([...raw].map(c=>c.charCodeAt(0)));}
-async function enableNotifications(time,closeModal){
+async function enableNotifications(time,time2,closeModal){
   try{
     if(Notification.permission==='denied'){showNotifBlockedHelp();return;}
     const perm=await Notification.requestPermission();
@@ -1079,9 +1166,9 @@ async function enableNotifications(time,closeModal){
     const sw=await navigator.serviceWorker.ready;
     const sub=await sw.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(key)});
     const subJson=sub.toJSON();
-    await fetch(`${BACKEND_URL}/subscribe`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:subJson,notifyAt:time})});
-    notifState.enabled=true;notifState.notifyAt=time;notifState.endpoint=subJson.endpoint;
-    saveNotif();closeModal();showToast(`🔔 Notifications activées à ${time} ✓`);
+    await fetch(`${BACKEND_URL}/subscribe`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:subJson,notifyAt:time,notifyAt2:time2||''})});
+    notifState.enabled=true;notifState.notifyAt=time;notifState.notifyAt2=time2||'';notifState.endpoint=subJson.endpoint;
+    saveNotif();closeModal();showToast(`🔔 Notifications activées à ${time}${time2?' et '+time2:''} ✓`);
   }catch(err){console.error(err);showToast("Erreur lors de l'activation");}
 }
 async function disableNotifications(){
@@ -1091,8 +1178,8 @@ async function disableNotifications(){
     if(sub)await sub.unsubscribe();
   }catch(e){console.error(e);}
 }
-async function updateNotifTime(time){
-  try{await fetch(`${BACKEND_URL}/update-time`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint,notifyAt:time})});}
+async function updateNotifTime(time,time2){
+  try{await fetch(`${BACKEND_URL}/update-time`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint,notifyAt:time,notifyAt2:time2||''})});}
   catch(e){console.error(e);}
 }
 function showNotifBlockedHelp(){
