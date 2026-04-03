@@ -796,6 +796,17 @@ function showSettingsModal() {
       <div class="notif-status ${notifState.enabled?'on':'off'}">
         ${notifState.enabled?`🔔 Activées — rappel à ${notifState.notifyAt}`:'🔕 Désactivées'}
       </div>
+
+      <div class="settings-row" style="margin-top:10px">
+        <div class="settings-label">
+          <span class="settings-icon" id="theme-icon">${isLightTheme()?'☀️':'🌙'}</span>
+          <div><div class="settings-name">Thème</div><div class="settings-desc" id="theme-desc">${isLightTheme()?'Mode clair':'Mode sombre'}</div></div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="theme-toggle" ${isLightTheme()?'checked':''}>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
     </div>
     <div class="settings-actions">
       <button class="btn-secondary small" id="btn-test" ${!notifState.enabled?'disabled':''}>Tester</button>
@@ -807,6 +818,10 @@ function showSettingsModal() {
         <button class="btn-data" id="btn-import">⬇️ Importer des données</button>
       </div>
       <input type="file" id="import-file-input" accept=".json" style="display:none">
+      <div class="settings-data-actions" style="margin-top:0">
+        <button class="btn-data" id="btn-show-suggestions">💡 Catalogue d'objectifs</button>
+        <button class="btn-data danger-data" id="btn-reset-all">🗑 Effacer toutes les données</button>
+      </div>
       <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">🗑 Vider le cache de l'app</a>
     </div>`);
 
@@ -854,6 +869,120 @@ function showSettingsModal() {
       }
     };
     reader.readAsText(file);
+  });
+
+  // Thème clair/sombre
+  const themeToggle = overlay.querySelector('#theme-toggle');
+  themeToggle?.addEventListener('change', () => {
+    const light = themeToggle.checked;
+    setTheme(light);
+    overlay.querySelector('#theme-icon').textContent = light ? '☀️' : '🌙';
+    overlay.querySelector('#theme-desc').textContent  = light ? 'Mode clair' : 'Mode sombre';
+  });
+
+  // Catalogue d'objectifs
+  overlay.querySelector('#btn-show-suggestions')?.addEventListener('click', () => {
+    close(); showSuggestionsModal();
+  });
+
+  // Effacer toutes les données
+  overlay.querySelector('#btn-reset-all')?.addEventListener('click', () => {
+    close(); confirmResetAll();
+  });
+}
+
+// ─── Thème clair / sombre ─────────────────────────────────────────────────────
+const THEME_KEY = 'cap_theme';
+
+function isLightTheme() {
+  return localStorage.getItem(THEME_KEY) === 'light';
+}
+
+function setTheme(light) {
+  if (light) {
+    document.documentElement.classList.add('light');
+    localStorage.setItem(THEME_KEY, 'light');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f4f6fb');
+  } else {
+    document.documentElement.classList.remove('light');
+    localStorage.setItem(THEME_KEY, 'dark');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#0f1117');
+  }
+}
+
+function applyTheme() {
+  setTheme(isLightTheme());
+}
+
+// ─── Catalogue d'objectifs ────────────────────────────────────────────────────
+function showSuggestionsModal() {
+  const selected = new Set();
+  const { close, overlay } = showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title">Catalogue d'objectifs 💡</h2>
+    <p class="modal-subtitle">Sélectionne des objectifs à ajouter à ta liste.</p>
+    <div class="suggest-grid" id="suggest-grid-modal" style="margin-bottom:0"></div>
+    <button class="btn-primary" id="btn-add-suggestions">Ajouter →</button>`);
+
+  function refresh() {
+    const grid = overlay.querySelector('#suggest-grid-modal');
+    grid.innerHTML = SUGGESTIONS.map((s, i) => `
+      <button class="suggest-card ${selected.has(i) ? 'selected' : ''}" data-i="${i}">
+        <span class="suggest-emoji">${s.emoji}</span>
+        <span class="suggest-label">${s.title}
+          <span class="suggest-period-hint">${periodIcon(s.period)} ${periodName(s.period)}</span>
+        </span>
+        ${selected.has(i) ? '<span class="suggest-check">✓</span>' : ''}
+      </button>`).join('');
+    grid.querySelectorAll('.suggest-card').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = +btn.dataset.i;
+        if (selected.has(i)) selected.delete(i); else selected.add(i);
+        refresh();
+      });
+    });
+    const addBtn = overlay.querySelector('#btn-add-suggestions');
+    addBtn.textContent = selected.size > 0 ? `Ajouter (${selected.size}) →` : 'Ajouter →';
+    addBtn.style.opacity = selected.size === 0 ? '0.5' : '1';
+  }
+  refresh();
+
+  overlay.querySelector('#btn-add-suggestions').addEventListener('click', () => {
+    if (selected.size === 0) { showToast('Sélectionne au moins un objectif'); return; }
+    selected.forEach(i => {
+      const s = SUGGESTIONS[i];
+      const exists = state.objectives.some(o => !o.archived && o.title === s.title && o.period === s.period);
+      if (!exists) {
+        state.objectives.push({
+          id: uid(), title: s.title, period: s.period, periodLabel: periodLabel(s.period),
+          mode: s.mode, progress: 0,
+          tasks: s.mode === 'list' ? s.tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          lastResetAt: new Date().toISOString(), archived: false, journal: []
+        });
+      }
+    });
+    save(); close(); render();
+    showToast(`✓ ${selected.size} objectif${selected.size > 1 ? 's' : ''} ajouté${selected.size > 1 ? 's' : ''} !`);
+  });
+}
+
+// ─── Effacer toutes les données ───────────────────────────────────────────────
+function confirmResetAll() {
+  const { close } = showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title" style="color:var(--red)">⚠️ Tout effacer ?</h2>
+    <p class="modal-subtitle">Cette action supprimera <strong style="color:var(--text)">tous tes objectifs, tout l'historique et toutes tes notes</strong>. Elle est irréversible.</p>
+    <p style="font-size:.82rem;color:var(--text3);margin-top:8px">Les paramètres de notifications et le thème ne seront pas effacés.</p>
+    <div class="review-actions">
+      <button class="btn-secondary" id="cancel-reset">Annuler</button>
+      <button class="btn-danger" id="confirm-reset">Tout effacer</button>
+    </div>`);
+  document.getElementById('cancel-reset').addEventListener('click', close);
+  document.getElementById('confirm-reset').addEventListener('click', () => {
+    state = { lastVisit: null, lastReview: null, objectives: [], onboardingDone: false };
+    save(); saveHistory([]); close();
+    showOnboarding();
   });
 }
 
@@ -1040,6 +1169,9 @@ function shake(el){el.classList.add('shake');el.addEventListener('animationend',
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function init(){
   if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+
+  // Appliquer le thème sauvegardé
+  applyTheme();
 
   // Migration : champs manquants
   if(state.objectives){

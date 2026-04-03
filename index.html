@@ -37,6 +37,39 @@
       --shadow:     0 8px 32px rgba(0,0,0,.45);
     }
 
+    /* ─── Thème clair ─── */
+    html.light {
+      --bg:         #f4f6fb;
+      --bg2:        #ffffff;
+      --bg3:        #edf0f7;
+      --surface:    #e4e8f4;
+      --border:     #d0d6e8;
+      --border2:    #b8c2d8;
+      --text:       #1a1e2e;
+      --text2:      #4a5270;
+      --text3:      #8890aa;
+      --green:      #1fad64;
+      --green-dim:  #d0f5e5;
+      --yellow:     #c98a00;
+      --yellow-dim: #fef3cc;
+      --red:        #d9364a;
+      --red-dim:    #fde0e3;
+      --accent:     #3d62f5;
+      --accent-dim: #dce5ff;
+      --shadow:     0 8px 32px rgba(0,0,0,.12);
+    }
+    html.light body::before { opacity: 0.25; }
+    html.light .app-header { background: rgba(244,246,251,.92); }
+    html.light .modal-box  { background: var(--bg2); }
+
+    /* Transition douce lors du changement de thème */
+    body, .obj-card, .modal-box, .modal-overlay, .app-header,
+    .settings-row, .fab-item, .btn-icon, .btn-icon-sm, .field-input,
+    .journal-entry, .history-item, .archive-item, .suggest-card,
+    .onboard-screen, .task-item, .journal-preview {
+      transition: background-color .25s, border-color .2s, color .15s;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
     body {
@@ -434,6 +467,10 @@
       display: flex; align-items: center; justify-content: center; gap: 5px;
     }
     .btn-data:hover { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+    .btn-data.danger-data:hover { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+
+    /* ─── Hint de période dans les suggestions ─── */
+    .suggest-period-hint { display: block; font-size: .72rem; color: var(--text3); margin-top: 2px; font-weight: 400; }
 
     /* ─── Streak badge ─── */
     .streak-badge {
