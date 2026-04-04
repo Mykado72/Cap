@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cap-v3.0.0';
+const CACHE_NAME = 'cap-v4.0.0';
 const ASSETS = ['./', './index.html', './app.js', './manifest.json'];
 
 self.addEventListener('install', e => {

@@ -21,7 +21,7 @@ function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 
 function loadNotif() {
   try { const r = localStorage.getItem(NOTIF_KEY); if (r) return JSON.parse(r); } catch (_) {}
-  return { enabled: false, notifyAt: '20:00', endpoint: null };
+  return { enabled: false, notifyAt: '20:00', notifyAt2: '', endpoint: null };
 }
 function saveNotif() { localStorage.setItem(NOTIF_KEY, JSON.stringify(notifState)); }
 
@@ -68,6 +68,36 @@ function formatDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) +
     ' à ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+
+// ─── Streak ───────────────────────────────────────────────────────────────────
+// Calcule le nombre de jours consécutifs où un bilan a été fait.
+// On se base sur les snapshots de l'historique (trigger='review').
+function computeStreak() {
+  const history = loadHistory();
+  // Récupérer les dates distinctes où un bilan a été fait (trigger review)
+  const reviewDays = [...new Set(
+    history
+      .filter(h => h.trigger === 'review')
+      .map(h => h.date.slice(0, 10))
+  )].sort().reverse(); // du plus récent au plus ancien
+
+  if (!reviewDays.length) return 0;
+
+  // Si le dernier bilan n'est ni aujourd'hui ni hier → streak rompu
+  const todayStr = today();
+  const yesterdayStr = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (reviewDays[0] !== todayStr && reviewDays[0] !== yesterdayStr) return 0;
+
+  let streak = 1;
+  for (let i = 1; i < reviewDays.length; i++) {
+    const prev = new Date(reviewDays[i - 1]);
+    const curr = new Date(reviewDays[i]);
+    const diff = Math.round((prev - curr) / 86400000);
+    if (diff === 1) streak++;
+    else break;
+  }
+  return streak;
 }
 
 // ─── Réinitialisation automatique ─────────────────────────────────────────────
@@ -221,12 +251,74 @@ function showOnboarding() {
   refresh();
 }
 
+// ─── Confettis 🎉 ────────────────────────────────────────────────────────────
+function launchConfetti() {
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:fixed;inset:0;z-index:9999;pointer-events:none;width:100%;height:100%';
+  document.body.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  const COLORS = ['#3ddc84','#5b7fff','#f5c542','#ff5f6d','#a78bfa','#f5a623','#fff'];
+  const COUNT   = 120;
+  const pieces  = Array.from({length: COUNT}, () => ({
+    x:  Math.random() * canvas.width,
+    y:  Math.random() * -canvas.height * 0.4 - 20,
+    w:  6 + Math.random() * 8,
+    h:  10 + Math.random() * 6,
+    r:  Math.random() * Math.PI * 2,
+    dr: (Math.random() - 0.5) * 0.25,
+    vx: (Math.random() - 0.5) * 4,
+    vy: 2 + Math.random() * 4,
+    color: COLORS[Math.floor(Math.random() * COLORS.length)],
+    alpha: 1,
+  }));
+
+  let frame, start = null;
+  const DURATION = 3000;
+
+  function draw(ts) {
+    if (!start) start = ts;
+    const elapsed = ts - start;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    pieces.forEach(p => {
+      p.x  += p.vx;
+      p.y  += p.vy;
+      p.r  += p.dr;
+      p.vy += 0.12; // gravité
+      p.alpha = elapsed < DURATION * 0.6 ? 1 : 1 - (elapsed - DURATION * 0.6) / (DURATION * 0.4);
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, p.alpha);
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.r);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    });
+
+    if (elapsed < DURATION) {
+      frame = requestAnimationFrame(draw);
+    } else {
+      canvas.remove();
+    }
+  }
+  frame = requestAnimationFrame(draw);
+}
+
 // ─── Render ───────────────────────────────────────────────────────────────────
 function render() {
   const periods = ['day','week','month','year'];
+  const streak = computeStreak();
+  const streakHtml = streak > 0
+    ? `<div class="streak-badge" title="${streak} jour${streak>1?'s':''} de suite">🔥 ${streak}</div>`
+    : '';
+
   document.getElementById('app').innerHTML = `
     <header class="app-header">
-      <div class="logo">Cap<span class="logo-bang">!</span></div>
+      <div class="logo">Cap<span class="logo-bang">!</span>${streakHtml}</div>
       <div class="header-actions">
         <button class="btn-icon" id="btn-review-now" title="Faire le point">✍️</button>
         <button class="btn-icon" id="btn-history" title="Historique des bilans">📊</button>
@@ -243,7 +335,7 @@ function render() {
               <h2 class="section-title">${periodName(p)}</h2>
               <button class="btn-add" data-period="${p}">+</button>
             </div>
-            <div class="objectives-list">
+            <div class="objectives-list sortable-list" data-period="${p}">
               ${list.length===0
                 ?`<p class="empty-hint">Aucun objectif — <button class="link-btn" data-period="${p}">en ajouter un</button></p>`
                 :list.map(renderCard).join('')}
@@ -261,21 +353,23 @@ function render() {
       </div>
     </div>`;
   bindEvents();
+  initDragAndDrop();
 }
 
 function renderCard(obj) {
   const pct=objectiveProgress(obj), color=progressColor(pct);
   const journalCount=(obj.journal||[]).filter(e=>e.note).length;
   return `
-    <article class="obj-card">
+    <article class="obj-card" data-id="${obj.id}" draggable="true">
       <div class="obj-card-top">
+        <div class="drag-handle" title="Réordonner">⠿</div>
         <div class="obj-info">
           <span class="obj-period-badge ${obj.period}">${periodName(obj.period)}</span>
           <h3 class="obj-title">${esc(obj.title)}</h3>
         </div>
         <div class="obj-actions">
           <button class="btn-icon-sm journal-btn ${journalCount>0?'has-notes':''}" data-journal="${obj.id}" title="Journal">📓</button>
-          <button class="btn-icon-sm" data-action="update" data-id="${obj.id}" title="Modifier">✎</button>
+          <button class="btn-icon-sm" data-action="edit" data-id="${obj.id}" title="Modifier l'objectif">✎</button>
           <button class="btn-icon-sm danger" data-action="delete" data-id="${obj.id}" title="Supprimer">✕</button>
         </div>
       </div>
@@ -323,7 +417,7 @@ function bindEvents() {
     e.stopPropagation();
     const{action,id}=b.dataset;
     if(action==='delete') confirmDelete(id);
-    if(action==='update') showUpdateModal(id);
+    if(action==='edit')   showEditModal(id);
   }));
   document.querySelectorAll('[data-journal]').forEach(el=>
     el.addEventListener('click',e=>{e.stopPropagation();showJournalModal(el.dataset.journal);}));
@@ -341,6 +435,7 @@ function bindEvents() {
         if(fill){fill.style.width=pct+'%';fill.style.background=color;}
         const lbl=card?.querySelector('.progress-label');
         if(lbl){lbl.textContent=pct+'%';lbl.style.color=color;}
+        if(pct===100) launchConfetti();
         save();
       }
     });
@@ -420,75 +515,150 @@ function showAddModal(period) {
   });
 }
 
-// ─── Update ───────────────────────────────────────────────────────────────────
-function showUpdateModal(id) {
-  const obj=state.objectives.find(o=>o.id===id);if(!obj)return;
-  const pct=objectiveProgress(obj);
+// ─── Édition complète d'un objectif ──────────────────────────────────────────
+function showEditModal(id) {
+  const obj = state.objectives.find(o=>o.id===id); if(!obj) return;
 
-  // Pour le mode liste : on travaille sur une copie locale des tâches
-  let localTasks = obj.mode==='list' ? obj.tasks.map(t=>({...t})) : [];
+  // Copies locales éditables
+  let localTitle  = obj.title;
+  let localPeriod = obj.period;
+  let localMode   = obj.mode;
+  let localPct    = obj.progress || 0;
+  let localTasks  = obj.tasks ? obj.tasks.map(t=>({...t})) : [];
 
-  function buildModal() {
-    return `
-      <button class="modal-close">✕</button>
-      <h2 class="modal-title">Modifier</h2>
-      <p class="modal-subtitle">${esc(obj.title)}</p>
-      ${obj.mode==='percent'?`
-        <label class="field-label">Progression : <span id="pd">${pct}%</span></label>
-        <input type="range" id="pct-slider" class="pct-slider" min="0" max="100" value="${pct}">
-      `:`
-        <label class="field-label">Tâches</label>
-        <div id="edit-tasks-list">
-          ${localTasks.map((t,i)=>`
-            <div class="task-edit-row">
-              <input type="checkbox" class="task-check edit-task-cb" data-i="${i}" ${t.done?'checked':''}>
-              <span class="task-edit-label">${esc(t.label)}</span>
-              <button class="btn-remove-task edit-task-del" data-i="${i}" title="Supprimer">🗑</button>
-            </div>`).join('')}
-        </div>
-        <div class="task-add-row" style="margin-top:10px">
-          <input id="edit-task-input" class="field-input" placeholder="Nouvelle tâche…" maxlength="100">
-          <button class="btn-secondary small" id="btn-edit-add-task">Ajouter</button>
-        </div>
-      `}
-      <button class="btn-primary" id="btn-save-upd">Enregistrer</button>`;
-  }
+  const periods = ['day','week','month','year'];
 
-  const{close,overlay}=showModal(buildModal());
+  const {close, overlay} = showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title">Modifier l'objectif</h2>
 
-  function rebindTaskList() {
-    const listEl = overlay.querySelector('#edit-tasks-list');
-    if(!listEl) return;
-    listEl.innerHTML = localTasks.map((t,i)=>`
-      <div class="task-edit-row">
+    <label class="field-label">Titre</label>
+    <input id="edit-title" class="field-input" value="${esc(obj.title)}" maxlength="80">
+
+    <label class="field-label">Période</label>
+    <div class="period-toggle">
+      ${periods.map(p=>`
+        <button class="period-btn ${p===obj.period?'active':''}" data-p="${p}">
+          ${periodIcon(p)} ${periodName(p)}
+        </button>`).join('')}
+    </div>
+
+    <label class="field-label">Mode de suivi</label>
+    <div class="mode-toggle">
+      <button class="mode-btn ${obj.mode==='percent'?'active':''}" data-mode="percent">% Pourcentage</button>
+      <button class="mode-btn ${obj.mode==='list'?'active':''}" data-mode="list">☑ Liste de tâches</button>
+    </div>
+
+    <div id="edit-percent-section" class="${obj.mode==='percent'?'':'hidden'}">
+      <label class="field-label">Progression actuelle : <span id="edit-pct-display">${localPct}%</span></label>
+      <input type="range" id="edit-pct-slider" class="pct-slider" min="0" max="100" value="${localPct}">
+    </div>
+
+    <div id="edit-tasks-section" class="${obj.mode==='list'?'':'hidden'}">
+      <label class="field-label">Tâches <span style="color:var(--text3);font-weight:400;font-size:.75rem">(glisser pour réordonner)</span></label>
+      <div id="edit-tasks-list" class="edit-tasks-sortable"></div>
+      <div class="task-add-row" style="margin-top:8px">
+        <input id="edit-task-input" class="field-input" placeholder="Nouvelle tâche…" maxlength="100">
+        <button class="btn-secondary small" id="btn-edit-add-task">Ajouter</button>
+      </div>
+    </div>
+
+    <button class="btn-primary" id="btn-save-edit">Enregistrer</button>`);
+
+  // ── Titre
+  overlay.querySelector('#edit-title').addEventListener('input', e => { localTitle = e.target.value; });
+
+  // ── Période
+  overlay.querySelectorAll('.period-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      overlay.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      localPeriod = btn.dataset.p;
+    });
+  });
+
+  // ── Mode
+  overlay.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      overlay.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      localMode = btn.dataset.mode;
+      overlay.querySelector('#edit-percent-section').classList.toggle('hidden', localMode !== 'percent');
+      overlay.querySelector('#edit-tasks-section').classList.toggle('hidden', localMode !== 'list');
+    });
+  });
+
+  // ── Slider %
+  overlay.querySelector('#edit-pct-slider').addEventListener('input', e => {
+    localPct = +e.target.value;
+    overlay.querySelector('#edit-pct-display').textContent = localPct + '%';
+  });
+
+  // ── Liste de tâches avec drag interne
+  function rebuildTaskList() {
+    const list = overlay.querySelector('#edit-tasks-list');
+    list.innerHTML = localTasks.map((t,i) => `
+      <div class="task-edit-row" draggable="true" data-i="${i}">
+        <span class="drag-handle-sm">⠿</span>
         <input type="checkbox" class="task-check edit-task-cb" data-i="${i}" ${t.done?'checked':''}>
         <span class="task-edit-label">${esc(t.label)}</span>
-        <button class="btn-remove-task edit-task-del" data-i="${i}" title="Supprimer">🗑</button>
+        <button class="btn-remove-task edit-task-del" data-i="${i}">✕</button>
       </div>`).join('');
-    listEl.querySelectorAll('.edit-task-cb').forEach(cb=>{
-      cb.addEventListener('change',()=>{ localTasks[+cb.dataset.i].done=cb.checked; });
+
+    // Checkboxes
+    list.querySelectorAll('.edit-task-cb').forEach(cb => {
+      cb.addEventListener('change', () => { localTasks[+cb.dataset.i].done = cb.checked; });
     });
-    listEl.querySelectorAll('.edit-task-del').forEach(btn=>{
-      btn.addEventListener('click',()=>{ localTasks.splice(+btn.dataset.i,1); rebindTaskList(); });
+    // Supprimer
+    list.querySelectorAll('.edit-task-del').forEach(btn => {
+      btn.addEventListener('click', () => { localTasks.splice(+btn.dataset.i, 1); rebuildTaskList(); });
+    });
+    // Drag interne pour réordonner les tâches
+    let dragIdx = null;
+    list.querySelectorAll('.task-edit-row').forEach(row => {
+      row.addEventListener('dragstart', e => {
+        dragIdx = +row.dataset.i;
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('drag-over-task'); });
+      row.addEventListener('dragleave', () => row.classList.remove('drag-over-task'));
+      row.addEventListener('drop', e => {
+        e.preventDefault(); row.classList.remove('drag-over-task');
+        const targetIdx = +row.dataset.i;
+        if (dragIdx === null || dragIdx === targetIdx) return;
+        const [moved] = localTasks.splice(dragIdx, 1);
+        localTasks.splice(targetIdx, 0, moved);
+        rebuildTaskList();
+      });
     });
   }
+  rebuildTaskList();
 
-  if(obj.mode==='percent'){
-    overlay.querySelector('#pct-slider').addEventListener('input',e=>{overlay.querySelector('#pd').textContent=e.target.value+'%';});
-  } else {
-    rebindTaskList();
-    const addInput = overlay.querySelector('#edit-task-input');
-    overlay.querySelector('#btn-edit-add-task').addEventListener('click',()=>{
-      const v=addInput.value.trim();
-      if(v){ localTasks.push({id:uid(),label:v,done:false}); addInput.value=''; rebindTaskList(); }
-    });
-    addInput.addEventListener('keydown',e=>{ if(e.key==='Enter') overlay.querySelector('#btn-edit-add-task').click(); });
-  }
+  // Ajouter tâche
+  const addInp = overlay.querySelector('#edit-task-input');
+  overlay.querySelector('#btn-edit-add-task').addEventListener('click', () => {
+    const v = addInp.value.trim();
+    if (v) { localTasks.push({id:uid(),label:v,done:false}); addInp.value=''; rebuildTaskList(); }
+  });
+  addInp.addEventListener('keydown', e => { if(e.key==='Enter') overlay.querySelector('#btn-edit-add-task').click(); });
 
-  overlay.querySelector('#btn-save-upd').addEventListener('click',()=>{
-    if(obj.mode==='percent') obj.progress=+overlay.querySelector('#pct-slider').value;
-    else obj.tasks=localTasks;
-    obj.updatedAt=new Date().toISOString();save();close();render();
+  // ── Sauvegarder
+  overlay.querySelector('#btn-save-edit').addEventListener('click', () => {
+    const newTitle = overlay.querySelector('#edit-title').value.trim();
+    if (!newTitle) { shake(overlay.querySelector('#edit-title')); return; }
+    if (localMode === 'list' && localTasks.length === 0) { shake(overlay.querySelector('#edit-task-input')); return; }
+
+    obj.title    = newTitle;
+    obj.period   = localPeriod;
+    obj.mode     = localMode;
+    obj.progress = localMode === 'percent' ? localPct : 0;
+    obj.tasks    = localMode === 'list' ? localTasks : [];
+    obj.updatedAt = new Date().toISOString();
+    save(); close(); render();
+    if (objectiveProgress(obj) === 100) launchConfetti();
+    showToast('✓ Objectif mis à jour');
   });
 }
 
@@ -558,6 +728,7 @@ function showReviewModal() {
     else{obj.journal.push({id:uid(),date:new Date().toISOString(),note,pct:objectiveProgress(obj)});}
     snapshotObjective(obj,'review');
     obj.updatedAt=new Date().toISOString();
+    if(objectiveProgress(obj)===100) launchConfetti();
     save();close();reviewIndex++;showReviewModal();
   });
   overlay.querySelector('#btn-skip').addEventListener('click',()=>{close();reviewIndex++;showReviewModal();});
@@ -659,96 +830,390 @@ function confirmDelete(id) {
 
 // ─── Paramètres ───────────────────────────────────────────────────────────────
 function showSettingsModal() {
-  const supported='Notification' in window&&'serviceWorker' in navigator&&'PushManager' in window;
-  const{close,overlay}=showModal(`
+  const supported = 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+
+  // État local des deux créneaux (indépendants)
+  const slot1 = { enabled: notifState.enabled,        time: notifState.notifyAt  || '20:00' };
+  const slot2 = { enabled: !!notifState.notifyAt2,    time: notifState.notifyAt2 || ''      };
+
+  function renderNotifSlot(num, slot) {
+    const id = `slot${num}`;
+    return `
+      <div class="notif-slot" id="${id}-row">
+        <div class="notif-slot-left">
+          <label class="toggle-switch" style="flex-shrink:0">
+            <input type="checkbox" id="${id}-toggle" ${slot.enabled ? 'checked' : ''} ${!supported ? 'disabled' : ''}>
+            <span class="toggle-track"></span>
+          </label>
+          <div>
+            <div class="settings-name">${num === 1 ? '1ère' : '2ème'} notification</div>
+            <div class="settings-desc">${num === 2 ? 'Optionnelle · ' : ''}Heure de Paris</div>
+          </div>
+        </div>
+        <div class="notif-slot-right">
+          <input type="time" id="${id}-time" class="time-input"
+            value="${slot.time}"
+            ${!slot.enabled ? 'disabled' : ''}>
+          <button class="btn-notif-apply ${slot.enabled ? '' : 'hidden'}" id="${id}-apply">✓</button>
+        </div>
+      </div>`;
+  }
+
+  const { close, overlay } = showModal(`
     <button class="modal-close">✕</button>
     <h2 class="modal-title">Paramètres</h2>
+
     <div class="settings-section">
-      <div class="settings-row">
+      <div class="settings-group-title">🔔 Notifications push</div>
+      ${!supported ? `<p class="settings-warn">⚠️ Non supporté.<br>Sur iOS : installe l'app via Safari → "Sur l'écran d'accueil".</p>` : ''}
+      ${renderNotifSlot(1, slot1)}
+      ${renderNotifSlot(2, slot2)}
+      <button class="btn-secondary small" id="btn-test" style="margin-top:10px;width:100%;text-align:center" ${!notifState.enabled ? 'disabled' : ''}>Tester une notification</button>
+
+      <div class="settings-row" style="margin-top:14px">
         <div class="settings-label">
-          <span class="settings-icon">🔔</span>
-          <div><div class="settings-name">Notifications push</div><div class="settings-desc">Rappel quotidien pour faire le point</div></div>
+          <span class="settings-icon" id="theme-icon">${isLightTheme() ? '☀️' : '🌙'}</span>
+          <div><div class="settings-name">Thème</div><div class="settings-desc" id="theme-desc">${isLightTheme() ? 'Mode clair' : 'Mode sombre'}</div></div>
         </div>
         <label class="toggle-switch">
-          <input type="checkbox" id="notif-toggle" ${notifState.enabled?'checked':''} ${!supported?'disabled':''}>
+          <input type="checkbox" id="theme-toggle" ${isLightTheme() ? 'checked' : ''}>
           <span class="toggle-track"></span>
         </label>
       </div>
-      ${!supported?`<p class="settings-warn">⚠️ Non supporté sur ce navigateur.<br>Sur iOS : installe l'app sur l'écran d'accueil via Safari.</p>`:''}
-      <div class="settings-row ${notifState.enabled?'':'dimmed'}" id="time-row">
-        <div class="settings-label">
-          <span class="settings-icon">🕐</span>
-          <div><div class="settings-name">Heure du rappel</div><div class="settings-desc">Chaque jour à cette heure (heure de Paris)</div></div>
-        </div>
-        <input type="time" id="notif-time" class="time-input" value="${notifState.notifyAt}" ${!notifState.enabled?'disabled':''}>
-      </div>
-      <div class="notif-status ${notifState.enabled?'on':'off'}">
-        ${notifState.enabled?`🔔 Activées — rappel à ${notifState.notifyAt}`:'🔕 Désactivées'}
-      </div>
     </div>
-    <div class="settings-actions">
-      <button class="btn-secondary small" id="btn-test" ${!notifState.enabled?'disabled':''}>Tester</button>
-      <button class="btn-primary" id="btn-save-settings">Enregistrer</button>
-    </div>
+
     <div class="settings-clearzone">
       <div class="settings-data-actions">
         <button class="btn-data" id="btn-export">⬆️ Exporter mes données</button>
         <button class="btn-data" id="btn-import">⬇️ Importer des données</button>
       </div>
       <input type="file" id="import-file-input" accept=".json" style="display:none">
+      <div class="settings-data-actions" style="margin-top:0">
+        <button class="btn-data" id="btn-show-suggestions">💡 Catalogue d'objectifs</button>
+        <button class="btn-data danger-data" id="btn-reset-all">🗑 Effacer toutes les données</button>
+      </div>
       <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">🗑 Vider le cache de l'app</a>
     </div>`);
 
-  const toggle=overlay.querySelector('#notif-toggle');
-  const timeRow=overlay.querySelector('#time-row');
-  const timeInput=overlay.querySelector('#notif-time');
-  const testBtn=overlay.querySelector('#btn-test');
-  toggle.addEventListener('change',()=>{timeRow.classList.toggle('dimmed',!toggle.checked);timeInput.disabled=!toggle.checked;testBtn.disabled=!toggle.checked;});
-  overlay.querySelector('#btn-save-settings').addEventListener('click',async()=>{
-    const want=toggle.checked,time=timeInput.value||'20:00';
-    if(want&&!notifState.enabled){await enableNotifications(time,close);}
-    else if(!want&&notifState.enabled){await disableNotifications();notifState.enabled=false;notifState.endpoint=null;saveNotif();close();showToast('Notifications désactivées');}
-    else if(want&&notifState.enabled&&time!==notifState.notifyAt){await updateNotifTime(time);notifState.notifyAt=time;saveNotif();close();showToast(`🕐 Rappel mis à jour à ${time}`);}
-    else{close();}
-  });
-  testBtn.addEventListener('click',async()=>{
-    if(!notifState.endpoint)return;
-    testBtn.textContent='Envoi…';testBtn.disabled=true;
-    try{
-      const r=await fetch(`${BACKEND_URL}/test-push`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint})});
-      showToast(r.ok?'✓ Notification de test envoyée !':'Erreur lors du test');
-    }catch{showToast('Impossible de joindre le serveur');}
-    finally{testBtn.textContent='Tester';testBtn.disabled=false;}
+  // ── Helpers locaux ────────────────────────────────────────────────────────────
+  function getEl(id) { return overlay.querySelector('#' + id); }
+
+  function syncSlotUI(num) {
+    const tog  = getEl(`slot${num}-toggle`);
+    const inp  = getEl(`slot${num}-time`);
+    const appl = getEl(`slot${num}-apply`);
+    const on   = tog?.checked;
+    if (inp)  inp.disabled  = !on;
+    if (appl) appl.classList.toggle('hidden', !on);
+  }
+
+  // ── Créneau 1 ────────────────────────────────────────────────────────────────
+  getEl('slot1-toggle')?.addEventListener('change', async () => {
+    const on  = getEl('slot1-toggle').checked;
+    const t   = getEl('slot1-time').value || '20:00';
+    syncSlotUI(1);
+    getEl('btn-test').disabled = !on;
+
+    if (on && !notifState.enabled) {
+      // Première activation : demander permission + abonnement
+      await enableNotifications(t, notifState.notifyAt2 || '', close);
+    } else if (!on && notifState.enabled) {
+      // Désactiver complètement
+      await disableNotifications();
+      notifState.enabled  = false;
+      notifState.endpoint = null;
+      notifState.notifyAt = '';
+      saveNotif();
+      showToast('🔕 Notifications désactivées');
+      getEl('btn-test').disabled = true;
+    }
   });
 
-  // Export
-  overlay.querySelector('#btn-export')?.addEventListener('click',()=>{
-    exportData();
-  });
-
-  // Import
-  const fileInput=overlay.querySelector('#import-file-input');
-  overlay.querySelector('#btn-import')?.addEventListener('click',()=>fileInput?.click());
-  fileInput?.addEventListener('change',()=>{
-    const file=fileInput.files[0];
-    if(!file)return;
-    const reader=new FileReader();
-    reader.onload=e=>{
-      try{
-        importData(e.target.result);
-        close();
-      }catch(err){
-        showToast('❌ Fichier invalide ou corrompu');
-        console.error(err);
+  getEl('slot1-apply')?.addEventListener('click', async () => {
+    const t = getEl('slot1-time').value;
+    if (!t) return;
+    const btn = getEl('slot1-apply');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      if (!notifState.enabled) {
+        await enableNotifications(t, notifState.notifyAt2 || '', close);
+      } else {
+        await updateNotifTime(t, notifState.notifyAt2 || '');
+        notifState.notifyAt = t;
+        saveNotif();
+        showToast(`✓ 1ère notification → ${t}`);
       }
+    } finally { btn.textContent = '✓'; btn.disabled = false; }
+  });
+
+  // ── Créneau 2 ────────────────────────────────────────────────────────────────
+  getEl('slot2-toggle')?.addEventListener('change', async () => {
+    const on = getEl('slot2-toggle').checked;
+    const t  = getEl('slot2-time').value || '';
+    syncSlotUI(2);
+
+    if (!notifState.enabled) {
+      showToast('Active d\'abord la 1ère notification');
+      getEl('slot2-toggle').checked = false;
+      syncSlotUI(2);
+      return;
+    }
+
+    const newTime2 = on ? (t || '') : '';
+    if (!on) {
+      // Désactiver le 2ème créneau seulement
+      await updateNotifTime(notifState.notifyAt, '');
+      notifState.notifyAt2 = '';
+      saveNotif();
+      showToast('🔕 2ème notification désactivée');
+    } else if (t) {
+      // Activer avec l'heure déjà renseignée
+      await updateNotifTime(notifState.notifyAt, t);
+      notifState.notifyAt2 = t;
+      saveNotif();
+      showToast(`✓ 2ème notification → ${t}`);
+    }
+    // Si pas d'heure, l'utilisateur doit d'abord saisir une heure et appuyer sur ✓
+  });
+
+  getEl('slot2-apply')?.addEventListener('click', async () => {
+    const t = getEl('slot2-time').value;
+    if (!t) { showToast('Saisis une heure d\'abord'); return; }
+    if (!notifState.enabled) { showToast('Active d\'abord la 1ère notification'); return; }
+    const btn = getEl('slot2-apply');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await updateNotifTime(notifState.notifyAt, t);
+      notifState.notifyAt2 = t;
+      // S'assurer que le toggle est bien coché
+      getEl('slot2-toggle').checked = true;
+      saveNotif();
+      showToast(`✓ 2ème notification → ${t}`);
+    } finally { btn.textContent = '✓'; btn.disabled = false; }
+  });
+
+  // ── Tester ───────────────────────────────────────────────────────────────────
+  getEl('btn-test')?.addEventListener('click', async () => {
+    if (!notifState.endpoint) return;
+    const btn = getEl('btn-test');
+    btn.textContent = 'Envoi…'; btn.disabled = true;
+    try {
+      const r = await fetch(`${BACKEND_URL}/test-push`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: notifState.endpoint })
+      });
+      showToast(r.ok ? '✓ Notification de test envoyée !' : 'Erreur lors du test');
+    } catch { showToast('Impossible de joindre le serveur'); }
+    finally { btn.textContent = 'Tester une notification'; btn.disabled = false; }
+  });
+
+  // ── Thème ─────────────────────────────────────────────────────────────────────
+  getEl('theme-toggle')?.addEventListener('change', () => {
+    const light = getEl('theme-toggle').checked;
+    setTheme(light);
+    getEl('theme-icon').textContent = light ? '☀️' : '🌙';
+    getEl('theme-desc').textContent  = light ? 'Mode clair' : 'Mode sombre';
+  });
+
+  // ── Export / Import ───────────────────────────────────────────────────────────
+  getEl('btn-export')?.addEventListener('click', () => exportData());
+  const fileInput = getEl('import-file-input');
+  getEl('btn-import')?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', () => {
+    const file = fileInput.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      try { importData(e.target.result); close(); }
+      catch (err) { showToast('❌ Fichier invalide ou corrompu'); console.error(err); }
     };
     reader.readAsText(file);
   });
+
+  // ── Catalogue / Reset ─────────────────────────────────────────────────────────
+  getEl('btn-show-suggestions')?.addEventListener('click', () => { close(); showSuggestionsModal(); });
+  getEl('btn-reset-all')?.addEventListener('click', () => { close(); confirmResetAll(); });
+}
+
+// ─── Thème clair / sombre ─────────────────────────────────────────────────────
+const THEME_KEY = 'cap_theme';
+
+function isLightTheme() {
+  return localStorage.getItem(THEME_KEY) === 'light';
+}
+
+function setTheme(light) {
+  if (light) {
+    document.documentElement.classList.add('light');
+    localStorage.setItem(THEME_KEY, 'light');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#f4f6fb');
+  } else {
+    document.documentElement.classList.remove('light');
+    localStorage.setItem(THEME_KEY, 'dark');
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#0f1117');
+  }
+}
+
+function applyTheme() {
+  setTheme(isLightTheme());
+}
+
+// ─── Catalogue d'objectifs ────────────────────────────────────────────────────
+function showSuggestionsModal() {
+  const selected = new Set();
+  const { close, overlay } = showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title">Catalogue d'objectifs 💡</h2>
+    <p class="modal-subtitle">Sélectionne des objectifs à ajouter à ta liste.</p>
+    <div class="suggest-grid" id="suggest-grid-modal" style="margin-bottom:0"></div>
+    <button class="btn-primary" id="btn-add-suggestions">Ajouter →</button>`);
+
+  function refresh() {
+    const grid = overlay.querySelector('#suggest-grid-modal');
+    grid.innerHTML = SUGGESTIONS.map((s, i) => `
+      <button class="suggest-card ${selected.has(i) ? 'selected' : ''}" data-i="${i}">
+        <span class="suggest-emoji">${s.emoji}</span>
+        <span class="suggest-label">${s.title}
+          <span class="suggest-period-hint">${periodIcon(s.period)} ${periodName(s.period)}</span>
+        </span>
+        ${selected.has(i) ? '<span class="suggest-check">✓</span>' : ''}
+      </button>`).join('');
+    grid.querySelectorAll('.suggest-card').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = +btn.dataset.i;
+        if (selected.has(i)) selected.delete(i); else selected.add(i);
+        refresh();
+      });
+    });
+    const addBtn = overlay.querySelector('#btn-add-suggestions');
+    addBtn.textContent = selected.size > 0 ? `Ajouter (${selected.size}) →` : 'Ajouter →';
+    addBtn.style.opacity = selected.size === 0 ? '0.5' : '1';
+  }
+  refresh();
+
+  overlay.querySelector('#btn-add-suggestions').addEventListener('click', () => {
+    if (selected.size === 0) { showToast('Sélectionne au moins un objectif'); return; }
+    selected.forEach(i => {
+      const s = SUGGESTIONS[i];
+      const exists = state.objectives.some(o => !o.archived && o.title === s.title && o.period === s.period);
+      if (!exists) {
+        state.objectives.push({
+          id: uid(), title: s.title, period: s.period, periodLabel: periodLabel(s.period),
+          mode: s.mode, progress: 0,
+          tasks: s.mode === 'list' ? s.tasks.map(l => ({ id: uid(), label: l, done: false })) : [],
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          lastResetAt: new Date().toISOString(), archived: false, journal: []
+        });
+      }
+    });
+    save(); close(); render();
+    showToast(`✓ ${selected.size} objectif${selected.size > 1 ? 's' : ''} ajouté${selected.size > 1 ? 's' : ''} !`);
+  });
+}
+
+// ─── Effacer toutes les données ───────────────────────────────────────────────
+function confirmResetAll() {
+  const { close } = showModal(`
+    <button class="modal-close">✕</button>
+    <h2 class="modal-title" style="color:var(--red)">⚠️ Tout effacer ?</h2>
+    <p class="modal-subtitle">Cette action supprimera <strong style="color:var(--text)">tous tes objectifs, tout l'historique et toutes tes notes</strong>. Elle est irréversible.</p>
+    <p style="font-size:.82rem;color:var(--text3);margin-top:8px">Les paramètres de notifications et le thème ne seront pas effacés.</p>
+    <div class="review-actions">
+      <button class="btn-secondary" id="cancel-reset">Annuler</button>
+      <button class="btn-danger" id="confirm-reset">Tout effacer</button>
+    </div>`);
+  document.getElementById('cancel-reset').addEventListener('click', close);
+  document.getElementById('confirm-reset').addEventListener('click', () => {
+    state = { lastVisit: null, lastReview: null, objectives: [], onboardingDone: false };
+    save(); saveHistory([]); close();
+    showOnboarding();
+  });
+}
+
+// ─── Drag & Drop des cartes (réordonnancement) ────────────────────────────────
+function initDragAndDrop() {
+  let dragId = null, dragEl = null, placeholder = null;
+
+  document.querySelectorAll('.sortable-list').forEach(list => {
+    list.querySelectorAll('.obj-card').forEach(card => {
+      card.addEventListener('dragstart', e => {
+        if (e.target.closest('button,input,textarea,.journal-preview')) { e.preventDefault(); return; }
+        dragId = card.dataset.id; dragEl = card;
+        card.classList.add('card-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        placeholder = document.createElement('div');
+        placeholder.className = 'card-placeholder';
+        placeholder.style.height = card.offsetHeight + 'px';
+      });
+      card.addEventListener('dragend', () => {
+        card.classList.remove('card-dragging');
+        placeholder?.remove(); placeholder = null; dragId = null; dragEl = null;
+      });
+      card.addEventListener('dragover', e => {
+        e.preventDefault(); if (!dragEl || card === dragEl) return;
+        const mid = card.getBoundingClientRect().top + card.offsetHeight / 2;
+        card.parentNode.insertBefore(placeholder, e.clientY < mid ? card : card.nextSibling);
+      });
+      card.addEventListener('drop', e => {
+        e.preventDefault(); if (!dragId || card.dataset.id === dragId) return;
+        saveNewOrder(list);
+      });
+    });
+    list.addEventListener('dragover', e => e.preventDefault());
+  });
+
+  // Touch drag
+  document.querySelectorAll('.obj-card .drag-handle').forEach(handle => {
+    let touchEl = null, clone = null, offY = 0;
+    handle.addEventListener('touchstart', e => {
+      const card = handle.closest('.obj-card');
+      touchEl = card; card.classList.add('card-dragging');
+      const rect = card.getBoundingClientRect();
+      offY = rect.top - e.touches[0].clientY;
+      clone = card.cloneNode(true);
+      clone.style.cssText = `position:fixed;left:${rect.left}px;width:${rect.width}px;top:${rect.top}px;z-index:999;pointer-events:none;opacity:.88;transition:none;`;
+      document.body.appendChild(clone);
+      e.preventDefault();
+    }, {passive:false});
+    handle.addEventListener('touchmove', e => {
+      if (!clone || !touchEl) return;
+      const y = e.touches[0].clientY;
+      clone.style.top = (y + offY) + 'px';
+      clone.style.display = 'none';
+      const target = document.elementFromPoint(e.touches[0].clientX, y)?.closest('.obj-card');
+      clone.style.display = '';
+      if (target && target !== touchEl) {
+        const mid = target.getBoundingClientRect().top + target.offsetHeight / 2;
+        target.parentNode.insertBefore(touchEl, y < mid ? target : target.nextSibling);
+      }
+      e.preventDefault();
+    }, {passive:false});
+    handle.addEventListener('touchend', () => {
+      clone?.remove(); clone = null;
+      if (touchEl) {
+        touchEl.classList.remove('card-dragging');
+        saveNewOrder(touchEl.closest('.sortable-list'));
+        touchEl = null;
+      }
+    });
+  });
+}
+
+function saveNewOrder(list) {
+  if (!list) return;
+  const period = list.dataset.period;
+  const newOrder = [...list.querySelectorAll('.obj-card')].map(c => c.dataset.id);
+  const periodObjs = state.objectives.filter(o => !o.archived && o.period === period);
+  const reordered  = newOrder.map(id => periodObjs.find(o => o.id === id)).filter(Boolean);
+  let pi = 0;
+  state.objectives = state.objectives.map(o =>
+    (!o.archived && o.period === period) ? reordered[pi++] : o
+  );
+  save();
 }
 
 // ─── Push helpers ─────────────────────────────────────────────────────────────
 function urlB64ToUint8(b64){const pad='='.repeat((4-b64.length%4)%4);const raw=atob((b64+pad).replace(/-/g,'+').replace(/_/g,'/'));return new Uint8Array([...raw].map(c=>c.charCodeAt(0)));}
-async function enableNotifications(time,closeModal){
+async function enableNotifications(time,time2,closeModal){
   try{
     if(Notification.permission==='denied'){showNotifBlockedHelp();return;}
     const perm=await Notification.requestPermission();
@@ -757,9 +1222,9 @@ async function enableNotifications(time,closeModal){
     const sw=await navigator.serviceWorker.ready;
     const sub=await sw.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlB64ToUint8(key)});
     const subJson=sub.toJSON();
-    await fetch(`${BACKEND_URL}/subscribe`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:subJson,notifyAt:time})});
-    notifState.enabled=true;notifState.notifyAt=time;notifState.endpoint=subJson.endpoint;
-    saveNotif();closeModal();showToast(`🔔 Notifications activées à ${time} ✓`);
+    await fetch(`${BACKEND_URL}/subscribe`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subscription:subJson,notifyAt:time,notifyAt2:time2||''})});
+    notifState.enabled=true;notifState.notifyAt=time;notifState.notifyAt2=time2||'';notifState.endpoint=subJson.endpoint;
+    saveNotif();closeModal();showToast(`🔔 Notifications activées à ${time}${time2?' et '+time2:''} ✓`);
   }catch(err){console.error(err);showToast("Erreur lors de l'activation");}
 }
 async function disableNotifications(){
@@ -769,8 +1234,8 @@ async function disableNotifications(){
     if(sub)await sub.unsubscribe();
   }catch(e){console.error(e);}
 }
-async function updateNotifTime(time){
-  try{await fetch(`${BACKEND_URL}/update-time`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint,notifyAt:time})});}
+async function updateNotifTime(time,time2){
+  try{await fetch(`${BACKEND_URL}/update-time`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({endpoint:notifState.endpoint,notifyAt:time,notifyAt2:time2||''})});}
   catch(e){console.error(e);}
 }
 function showNotifBlockedHelp(){
@@ -847,6 +1312,9 @@ function shake(el){el.classList.add('shake');el.addEventListener('animationend',
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function init(){
   if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+
+  // Appliquer le thème sauvegardé
+  applyTheme();
 
   // Migration : champs manquants
   if(state.objectives){

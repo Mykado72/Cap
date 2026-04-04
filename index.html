@@ -37,6 +37,39 @@
       --shadow:     0 8px 32px rgba(0,0,0,.45);
     }
 
+    /* ─── Thème clair ─── */
+    html.light {
+      --bg:         #f4f6fb;
+      --bg2:        #ffffff;
+      --bg3:        #edf0f7;
+      --surface:    #e4e8f4;
+      --border:     #d0d6e8;
+      --border2:    #b8c2d8;
+      --text:       #1a1e2e;
+      --text2:      #4a5270;
+      --text3:      #8890aa;
+      --green:      #1fad64;
+      --green-dim:  #d0f5e5;
+      --yellow:     #c98a00;
+      --yellow-dim: #fef3cc;
+      --red:        #d9364a;
+      --red-dim:    #fde0e3;
+      --accent:     #3d62f5;
+      --accent-dim: #dce5ff;
+      --shadow:     0 8px 32px rgba(0,0,0,.12);
+    }
+    html.light body::before { opacity: 0.25; }
+    html.light .app-header { background: rgba(244,246,251,.92); }
+    html.light .modal-box  { background: var(--bg2); }
+
+    /* Transition douce lors du changement de thème */
+    body, .obj-card, .modal-box, .modal-overlay, .app-header,
+    .settings-row, .fab-item, .btn-icon, .btn-icon-sm, .field-input,
+    .journal-entry, .history-item, .archive-item, .suggest-card,
+    .onboard-screen, .task-item, .journal-preview {
+      transition: background-color .25s, border-color .2s, color .15s;
+    }
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
     body {
@@ -243,6 +276,32 @@
     .settings-warn { font-size: .78rem; color: var(--yellow); background: var(--yellow-dim); border-radius: var(--radius-sm); padding: 10px 12px; margin-top: 10px; line-height: 1.5; }
     .settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 
+    /* ─── Notification slots indépendants ─── */
+    .settings-group-title {
+      font-size: .78rem; font-weight: 700; color: var(--text3);
+      text-transform: uppercase; letter-spacing: .5px;
+      margin-bottom: 6px; margin-top: 4px;
+    }
+    .notif-slot {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 12px 14px; border-radius: var(--radius-sm);
+      background: var(--bg3); border: 1px solid var(--border);
+      margin-top: 8px;
+    }
+    .notif-slot-left  { display: flex; align-items: center; gap: 12px; flex: 1; }
+    .notif-slot-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .btn-notif-apply {
+      background: var(--green); color: #0f1117;
+      border: none; border-radius: var(--radius-sm);
+      width: 32px; height: 32px; font-size: .9rem; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: opacity .15s, transform .15s;
+      flex-shrink: 0;
+    }
+    .btn-notif-apply:hover { opacity: .85; transform: scale(1.05); }
+    .btn-notif-apply.hidden { display: none; }
+    html.light .btn-notif-apply { color: #fff; }
+
     /* Status badge */
     .notif-status { font-size: .8rem; font-weight: 600; padding: 8px 12px; border-radius: var(--radius-sm); margin-top: 10px; text-align: center; }
     .notif-status.on  { background: var(--green-dim); color: var(--green); }
@@ -434,6 +493,57 @@
       display: flex; align-items: center; justify-content: center; gap: 5px;
     }
     .btn-data:hover { background: var(--accent-dim); color: var(--accent); border-color: var(--accent); }
+    .btn-data.danger-data:hover { background: var(--red-dim); color: var(--red); border-color: var(--red); }
+
+    /* ─── Hint de période dans les suggestions ─── */
+    .suggest-period-hint { display: block; font-size: .72rem; color: var(--text3); margin-top: 2px; font-weight: 400; }
+
+    /* ─── Streak badge ─── */
+    .streak-badge {
+      display: inline-flex; align-items: center; gap: 3px;
+      font-family: 'Syne', sans-serif; font-weight: 700; font-size: .85rem;
+      background: linear-gradient(135deg, #ff6b35, #f5a623);
+      color: #fff; border-radius: 20px; padding: 2px 10px 2px 6px;
+      margin-left: 10px; vertical-align: middle;
+      box-shadow: 0 2px 8px rgba(245,166,35,.35);
+      animation: streakPop .4s cubic-bezier(.175,.885,.32,1.275) both;
+    }
+    @keyframes streakPop { from { transform: scale(.6); opacity:0; } to { transform: scale(1); opacity:1; } }
+
+    /* ─── Drag handle ─── */
+    .drag-handle {
+      color: var(--text3); cursor: grab; font-size: 1.1rem;
+      padding: 0 6px 0 0; flex-shrink: 0; touch-action: none;
+      user-select: none; line-height: 1;
+      transition: color .15s;
+    }
+    .drag-handle:active { cursor: grabbing; color: var(--text2); }
+    .drag-handle-sm {
+      color: var(--text3); cursor: grab; font-size: .9rem;
+      flex-shrink: 0; touch-action: none; user-select: none;
+    }
+    .card-dragging { opacity: .45; border: 2px dashed var(--accent) !important; }
+    .card-placeholder {
+      border-radius: var(--radius); border: 2px dashed var(--accent);
+      background: var(--accent-dim); margin-bottom: 10px;
+    }
+    .card-touch-clone { box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+    .drag-over-task { background: var(--accent-dim) !important; border-radius: var(--radius-sm); }
+
+    /* ─── Period toggle (modal édition) ─── */
+    .period-toggle {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px;
+    }
+    .period-btn {
+      padding: 8px 10px; background: var(--bg3); border: 1.5px solid var(--border);
+      color: var(--text2); border-radius: var(--radius-sm); font-size: .82rem;
+      cursor: pointer; font-family: 'DM Sans', sans-serif; text-align: center;
+      transition: background .15s, border-color .15s, color .15s;
+    }
+    .period-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
+    /* ─── Edit tasks sortable ─── */
+    .edit-tasks-sortable { display: flex; flex-direction: column; gap: 5px; min-height: 10px; }
 
     /* ─── Badge période Quotidien ─── */
     .obj-period-badge.day { background: #2a1a0a; color: #f5a623; }
