@@ -1,6 +1,6 @@
 // ─── Cap! — app.js ────────────────────────────────────────────────────────────
-// const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app';
-const BACKEND_URL = 'https://cap-backend-render.onrender.com';
+const BACKEND_URL = 'https://cap-backend-production-3b1c.up.railway.app';
+// const BACKEND_URL = 'https://cap-backend-render.onrender.com';
 
 const STORAGE_KEY = 'cap_data';
 const NOTIF_KEY   = 'cap_notif';
@@ -893,6 +893,7 @@ function showSettingsModal() {
         <button class="btn-data danger-data" id="btn-reset-all">🗑 Effacer toutes les données</button>
       </div>
       <a href="https://mykado72.github.io/Cap/clear-cache.html" class="btn-clear-cache" target="_blank" rel="noopener">🗑 Vider le cache de l'app</a>
+      <button class="btn-clear-cache" id="btn-reset-notif" style="width:100%;margin-top:6px;cursor:pointer;background:none;border:1px solid var(--border)">🔔 Réinitialiser les notifications</button>
     </div>`);
 
   // ── Helpers locaux ────────────────────────────────────────────────────────────
@@ -1032,6 +1033,13 @@ function showSettingsModal() {
   // ── Catalogue / Reset ─────────────────────────────────────────────────────────
   getEl('btn-show-suggestions')?.addEventListener('click', () => { close(); showSuggestionsModal(); });
   getEl('btn-reset-all')?.addEventListener('click', () => { close(); confirmResetAll(); });
+
+  // Réinitialiser les notifications (désynchronisation)
+  getEl('btn-reset-notif')?.addEventListener('click', () => {
+    resetNotifState();
+    close();
+    showToast('🔔 Notifications réinitialisées — tu peux les réactiver');
+  });
 }
 
 // ─── Thème clair / sombre ─────────────────────────────────────────────────────
@@ -1309,12 +1317,41 @@ function showToast(msg){
 }
 function shake(el){el.classList.add('shake');el.addEventListener('animationend',()=>el.classList.remove('shake'),{once:true});}
 
+// ─── Synchronisation état notifications ───────────────────────────────────────
+// Au démarrage, vérifie que le Service Worker a bien un abonnement push actif.
+// Si notifState dit "activé" mais que le SW n'a pas d'abonnement (ex: après
+// un redéploiement backend ou une suppression manuelle), on remet à zéro.
+async function syncNotifState() {
+  if (!notifState.enabled) return; // déjà désactivé, rien à faire
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    const sw  = await navigator.serviceWorker.ready;
+    const sub = await sw.pushManager.getSubscription();
+    if (!sub) {
+      // Plus d'abonnement SW → réinitialiser silencieusement
+      console.warn('Cap!: abonnement push perdu, réinitialisation de notifState');
+      resetNotifState();
+    }
+  } catch (e) {
+    console.warn('Cap!: impossible de vérifier l\'abonnement push', e);
+  }
+}
+
+// Remet notifState à zéro sans toucher aux données de l'app
+function resetNotifState() {
+  notifState = { enabled: false, notifyAt: notifState.notifyAt || '20:00', notifyAt2: notifState.notifyAt2 || '', endpoint: null };
+  saveNotif();
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 function init(){
   if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
 
   // Appliquer le thème sauvegardé
   applyTheme();
+
+  // Vérifier la synchronisation de l'abonnement push au démarrage
+  syncNotifState();
 
   // Migration : champs manquants
   if(state.objectives){
