@@ -545,7 +545,28 @@
     /* ─── Edit tasks sortable ─── */
     .edit-tasks-sortable { display: flex; flex-direction: column; gap: 5px; min-height: 10px; }
 
-    /* ─── Badge période Quotidien ─── */
+    /* ─── Bloc conseil / tip ─── */
+    .tip-block {
+      display: flex; align-items: flex-start; gap: 8px;
+      margin-top: 12px; padding: 10px 12px;
+      background: var(--accent-dim);
+      border-radius: var(--radius-sm);
+      border-left: 3px solid var(--accent);
+    }
+    .tip-icon { font-size: .95rem; flex-shrink: 0; margin-top: 1px; }
+    .tip-content { flex: 1; min-width: 0; }
+    .tip-msg {
+      font-size: .82rem; color: var(--text2); line-height: 1.45;
+      margin-bottom: 4px;
+    }
+    .tip-link {
+      font-size: .76rem; color: var(--accent);
+      text-decoration: none; font-weight: 600;
+      display: inline-flex; align-items: center; gap: 3px;
+    }
+    .tip-link:hover { text-decoration: underline; }
+    html.light .tip-block { background: #e8eeff; border-color: var(--accent); }
+    html.light .tip-msg   { color: var(--text2); }
     .obj-period-badge.day { background: #2a1a0a; color: #f5a623; }
     .review-tag.day { background: #2a1a0a; color: #f5a623; }
 
